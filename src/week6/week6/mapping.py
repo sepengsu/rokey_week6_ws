@@ -122,7 +122,6 @@ class MapWithPose(Node):
     def distance(self,point):
         x = self.pose.position.x
         y = self.pose.position.y
-        theta = self.pose.orientation.z
         x1, y1 = point
         return np.sqrt((x-x1)**2 + (y-y1)**2)
     
@@ -142,23 +141,25 @@ class MapWithPose(Node):
         여기서 픽셀 값이 급격하게 바뀌는 구간 (0 to 255)
         알고리즘을 찾아 경계선을 찾아 출력합니다.
         '''
-        # 3. 맵에서 -1과 0의 경계점을 찾아 출력합니다
-        # 인접 픽셀 간 차이 계산
-        diff_x = np.abs(image[:, 1:] - image[:, :-1])  # X 방향 차이
-        diff_y = np.abs(image[1:, :] - image[:-1, :])  # Y 방향 차이
+        # 1. 경계 계산 (X, Y 방향에서의 차이)
+        diff_x = image[:, 1:] - image[:, :-1]  # X 방향 차이
+        diff_y = image[1:, :] - image[:-1, :]  # Y 방향 차이
 
-        # 특정 조건 (0 -> 255) 만족하는 영역 추출
-        binary_x = (diff_x == 255).astype(np.uint8) * 255
-        binary_y = (diff_y == 255).astype(np.uint8) * 255
+        # 2. 0 → 255 조건 확인
+        boundary_x = ((image[:, :-1] == 0) & (diff_x == 255)).astype(np.uint8) * 255
+        boundary_y = ((image[:-1, :] == 0) & (diff_y == 255)).astype(np.uint8) * 255
 
-        # 결과 병합
-        binary_edges = np.zeros_like(image)
-        binary_edges[:, 1:] = binary_x  # X 방향 엣지
-        binary_edges[1:, :] += binary_y  # Y 방향 엣지
+        # 3. 결과 병합
+        binary_edges = np.zeros_like(image, dtype=np.uint8)
+        binary_edges[:, 1:] = boundary_x  # X 방향
+        binary_edges[1:, :] += boundary_y  # Y 방향
+        
+        # 4. 경계선 좌표 찾기
+        points = np.where(binary_edges == 255)
+        if len(points[0]) == 0:
+            return None
+        return list(zip(points[1], points[0]))
 
-        # 4. 경계선을 찾아서 출력합니다.
-        points = np.argwhere(binary_edges == 255)
-        return points
 
     
     def finish_mapping(self):
