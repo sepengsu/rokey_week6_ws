@@ -143,18 +143,23 @@ class MapWithPose(Node):
         알고리즘을 찾아 경계선을 찾아 출력합니다.
         '''
         # 3. 맵에서 -1과 0의 경계점을 찾아 출력합니다
-        boundary = cv2.Canny(image, 0, 255)
+        # 인접 픽셀 간 차이 계산
+        diff_x = np.abs(image[:, 1:] - image[:, :-1])  # X 방향 차이
+        diff_y = np.abs(image[1:, :] - image[:-1, :])  # Y 방향 차이
+
+        # 특정 조건 (0 -> 255) 만족하는 영역 추출
+        binary_x = (diff_x == 255).astype(np.uint8) * 255
+        binary_y = (diff_y == 255).astype(np.uint8) * 255
+
+        # 결과 병합
+        binary_edges = np.zeros_like(image)
+        binary_edges[:, 1:] = binary_x  # X 방향 엣지
+        binary_edges[1:, :] += binary_y  # Y 방향 엣지
+
         # 4. 경계선을 찾아서 출력합니다.
-        # HoughLinesP(이미지, 거리 해상도, 각도 해상도, 임계값, 선의 최소 길이, 선 간의 최대 허용간격)
-        lines = cv2.HoughLinesP(boundary, 1, np.pi/180, threshold=50, minLineLength=3, maxLineGap=10)
-        mid_point = []
-        if lines is None:
-            return
-        for line in lines:
-            x1, y1, x2, y2 = line[0]
-            mid_point.append(((x1+x2)//2, (y1+y2)//2))
-        mid_point = np.array(mid_point)
-        return mid_point
+        points = np.argwhere(binary_edges == 255)
+        return points
+
     
     def finish_mapping(self):
         '''

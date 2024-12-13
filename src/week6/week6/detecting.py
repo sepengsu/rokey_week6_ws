@@ -22,7 +22,7 @@ class DetectImage(Node):
         super().__init__('detecting')
         self.info_sub = self.create_subscription(CameraInfo, '/oakd/rgb/preview/camera_info', self.info_callback, 10)
         self.image_sub = self.create_subscription(Image, '/oakd/rgb/preview/image_raw', self.image_callback, 10)
-        self.main_img = cv2.imread()
+        self.main_img = cv2.imread(main_img)
     def image_callback(self, msg):
         data = msg.data
         bridge = CvBridge()
