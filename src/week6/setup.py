@@ -21,6 +21,7 @@ setup(
     entry_points={
         'console_scripts': [
             'mapping = week6.mapping:main',
+            'detecting = week6.detecting:main',
         ],
     },
 )
