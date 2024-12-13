@@ -14,6 +14,7 @@ import cv2, numpy as np
 class MapWithPose(Node):
     def __init__(self):
         super().__init__('mapping')
+        # self.scan = self.create_subscription(LaserScan, '/scan', self.scan_callback, 10)
         self.map = self.create_subscription(OccupancyGrid, '/map', self.map_callback, 10)
         self.pose_sub = self.create_subscription(PoseWithCovarianceStamped, '/pose', self.pose_callback, 10)
         self.goal_pose_pub = self.create_publisher(PoseStamped, '/goal_pose', 10)
@@ -107,18 +108,8 @@ class MapWithPose(Node):
                 min_distance = self.distance(point)
         if goal_point:
             return goal_point
-        self.get_logger().info('No goal point')
-        min_distance = 100
-        for point in points:
-            point = self.map_to_world(point)
-            if self.distance(point)< min_distance and self.is_goal_safe(point[0], point[1], safety_radius=0):
-                goal_point = point
-                min_distance = self.distance(point)
-        if goal_point:
-            return goal_point
-        else:
-            self.get_logger().info('Map end')
-            self.finish_mapping()
+        
+        return goal_point
     
     def map_to_world(self, point):
         """
@@ -204,11 +195,10 @@ class MapWithPose(Node):
         맵핑이 끝났을 때 수행할 작업을 수행합니다.
         '''
         self.get_logger().info('Finish mapping')
-        goal = PoseStamped()
-        goal.header.frame_id = 'map'
-        goal.header.stamp = self.get_clock().now().to_msg()
-        goal.pose = self.init_pose
-        self.goal_pose_pub.publish(goal)
+        self.map.destroy()
+        self.pose_sub.destroy()
+        self.goal_pose_pub.destroy()
+        self.destroy_node()
         
 def main(args=None):
     rclpy.init()

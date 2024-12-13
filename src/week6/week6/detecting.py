@@ -3,17 +3,21 @@ from rclpy.node import Node
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
 from sensor_msgs.msg import CameraInfo
-import cv2
+import cv2,numpy as np 
 from rclpy.qos import QoSProfile
-from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
-# QoS 프로파일 설정
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, QoSHistoryPolicy
+
 qos_profile = QoSProfile(
-    reliability=ReliabilityPolicy.RELIABLE,  # 신뢰성: 데이터 보장(RELIABLE) 또는 최선형(BEST_EFFORT)
-    history=10,                              # 히스토리 깊이
-    durability=DurabilityPolicy.VOLATILE    # 지속성: VOLATILE (구독 중일 때만 데이터 유지)
+    reliability=ReliabilityPolicy.RELIABLE,      # 신뢰성: 데이터 보장(RELIABLE) 또는 최선형(BEST_EFFORT)
+    history=QoSHistoryPolicy.KEEP_LAST,          # 히스토리 정책
+    depth=10,                                    # KEEP_LAST일 경우 히스토리 깊이
+    durability=DurabilityPolicy.VOLATILE         # 지속성: VOLATILE (구독 중일 때만 데이터 유지)
 )
+
 ext_img = './src/week6/week6/image1.png'
 main_img= './src/week6/week6/image2.png'
+EXT = 1
+MAIN = 2
 class DetectImage(Node):
     def __init__(self):
         '''
@@ -22,26 +26,67 @@ class DetectImage(Node):
         super().__init__('detecting')
         self.info_sub = self.create_subscription(CameraInfo, '/oakd/rgb/preview/camera_info', self.info_callback, 10)
         self.image_sub = self.create_subscription(Image, '/oakd/rgb/preview/image_raw', self.image_callback, 10)
-        self.main_img = cv2.imread(main_img)
+        self.main_img = cv2.imread(main_img, cv2.IMREAD_GRAYSCALE) # 회색 이미지로 읽어옵니다.
+        self.ext_img = cv2.imread(ext_img, cv2.IMREAD_GRAYSCALE) # 회색 이미지로 읽어옵니다.
+
     def image_callback(self, msg):
+        if msg is None:
+            self.get_logger().warn('no image acc')
+            return 
         data = msg.data
         bridge = CvBridge()
-        image1 = bridge.imgmsg_to_cv2(data, 'bgr8')
-        self.get_logger().info('image get')
-        is_detect = self.is_detect(image1)
-        if is_detect:
-            self.get_logger().info('Detected')
-            self.ch_image(image1)
+        image = bridge.imgmsg_to_cv2(msg, "bgr8")
 
-    def is_detect(self, image):
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        _, thresholded = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY)
-        white_pixels = cv2.countNonZero(thresholded)
-        total_pixels = image.shape[0] * image.shape[1]
-        white_ratio = white_pixels / total_pixels
-        return white_ratio > 0.5
+        self.image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) # 회색 이미지로 변환합니다.
+        self.ch_image()
+        self.detect()
+
+    def detect(self):
+        '''
+        1. 이미지를 받아옵니다.
+        2. 이미지를 처리합니다.
+        3. 이미지를 출력합니다.
+        '''
+        result = self.check()
+        if result == EXT:
+            self.get_logger().info('Ext Image Detected')
+        elif result == MAIN:
+            self.get_logger().info('Main Image Detected')
+        else:
+            self.get_logger().info('No Image Detected')
+    
+    def check(self):
+        '''
+        1. ext1과 img를 비교합니다.
+        방법론 
+        1. SIFT를 사용하여 특징점을 찾습니다.
+        2. 특징점을 매칭합니다.
+        3. 특징점의 개수를 확인합니다.
+        4. 특징 매칭 결과과 15개 이상이면 True, 아니면 False를 반환합니다.
+        '''
+        # SIFT 알고리즘 초기화
+        sift = cv2.SIFT_create()
+
+        # 특징점과 디스크립터 추출
+    
+        keypoints1, descriptors1 = sift.detectAndCompute(self.ext_img, None)
+        keypoints2, descriptors2 = sift.detectAndCompute(self.main_img, None)
+        keypoints3, descriptors3 = sift.detectAndCompute(self.image, None)
 
 
+        # 특징 매칭을 위한 BFMatcher 초기화
+        bf = cv2.BFMatcher(cv2.NORM_L2, crossCheck=True)
+
+        # 매칭 수행
+        matches = bf.match(descriptors1, descriptors3) # ext1과 img 매칭
+        if len(matches) > 15:
+            return EXT
+        
+        matches = bf.match(descriptors2, descriptors3) # main과 img 매칭
+        if len(matches) > 15:
+            return MAIN
+        return 0
+    
     def info_callback(self, msg):
         '''
         예시 
@@ -118,19 +163,15 @@ class DetectImage(Node):
         self.binning_y = msg.binning_y
         self.roi = msg.roi
 
-    def ch_image(self, image):
+    def ch_image(self):
         '''
         1. 이미지를 받아옵니다.
-        2. info를 이용하여 undistort를    
-
-def main(args=None):
-    rclpy.init()
-    node = MapWithPose()
-    while rclpy.ok():
-        rclpy.spin(node)
-    rclpy.shutdown() 수행합니다.
-        3. undistort된 이미지를 출력합니다.
+        2. info를 이용하여 undistort를 진행합니다. 
+        3. 이미지를 반환합니다. 
         '''
+        K = np.array(self.k).reshape((3,3))
+        D = np.array(self.d).reshape((1, 8))
+        self.image = cv2.undistort(self.image, K, D)
 
 def main(args=None):
     rclpy.init()
