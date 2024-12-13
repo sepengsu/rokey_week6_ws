@@ -79,8 +79,8 @@ class MapWithPose(Node):
             self.finish_mapping()
         points = self.find_boundary(map_img)
         if points is None:
-            self.get_logger().info('No boundary')
-            return
+            self.get_logger().info('Mapping is done')
+            self.finish_mapping()
         goal_point = self.find_goal(points)
         self.pub_goal(goal_point)
         
@@ -116,9 +116,7 @@ class MapWithPose(Node):
                 min_distance = self.distance(point)
         if goal_point:
             return goal_point
-        else:
-            self.get_logger().info('Map end')
-            self.finish_mapping()
+        return None
     
     def map_to_world(self, point):
         """
@@ -209,6 +207,8 @@ class MapWithPose(Node):
         goal.header.stamp = self.get_clock().now().to_msg()
         goal.pose = self.init_pose
         self.goal_pose_pub.publish(goal)
+        self.map.destroy() # map subscriber 종료
+        
         
 def main(args=None):
     rclpy.init()
