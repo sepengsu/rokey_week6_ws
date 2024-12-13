@@ -78,6 +78,12 @@ class MapWithPose(Node):
             self.get_logger().info('Mapping is done')
             self.finish_mapping()
         points = self.find_boundary(map_img)
+        if points is None:
+            self.get_logger().info('No boundary')
+            
+
+
+
         goal_point = self.find_goal(points)
         self.pub_goal(goal_point)
         
@@ -129,7 +135,6 @@ class MapWithPose(Node):
         img = np.array(data).reshape(self.height, self.width)
         img = np.where(img==-1, 255, img)
         img = np.where(img==0, 0, img)
-        img = np.where(img==100, 50, img)
         img = img.astype(np.uint8)
         return img
     
@@ -139,12 +144,20 @@ class MapWithPose(Node):
         여기서 픽셀 값이 급격하게 바뀌는 구간 (0 to 255)
         알고리즘을 찾아 경계선을 찾아 출력합니다.
         '''
-        # 3. 맵에서 -1과 0의 경계선을 찾아 출력합니다
+        # 3. 맵에서 -1과 0의 경계점을 찾아 출력합니다
         boundary = cv2.Canny(image, 0, 255)
-        # 4. boundary 경계선의 좌표를 찾아 출력합니다.
-        points = np.where(boundary==255)
-        points = np.array(points).T # (y, x) -> (x, y)
-        return points
+        # 4. 경계선을 찾아서 출력합니다.
+        # HoughLinesP(이미지, 거리 해상도, 각도 해상도, 임계값, 선의 최소 길이, 선 간의 최대 허용간격)
+        lines = cv2.HoughLinesP(boundary, 1, np.pi/180, threshold=50, minLineLength=3, maxLineGap=10)
+        mid_point = []
+        if lines is None:
+            return
+        for line in lines:
+            x1, y1, x2, y2 = line[0]
+            mid_point.append(((x1+x2)//2, (y1+y2)//2))
+        mid_point = np.array(mid_point)
+        return mid_point
+    
     def finish_mapping(self):
         '''
         맵핑이 끝났을 때 수행할 작업을 수행합니다.
