@@ -38,7 +38,7 @@ class DetectImage(Node):
         image = bridge.imgmsg_to_cv2(msg, "bgr8")
 
         self.image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) # 회색 이미지로 변환합니다.
-        self.ch_image()
+        self.change_image()
         self.detect()
 
     def detect(self):
@@ -89,16 +89,15 @@ class DetectImage(Node):
     
     def info_callback(self, msg):
         '''
-        예시 
         header:
             stamp:
-                sec: 1734051505
-                nanosec: 363371767
+                sec: 1734080480
+                nanosec: 101003283
             frame_id: oakd_rgb_camera_optical_frame
         height: 250
         width: 250
         distortion_model: rational_polynomial
-        d:
+        d: 
         - -3.4751670360565186
         - -38.5734748840332
         - 0.00034309603506699204
@@ -128,7 +127,7 @@ class DetectImage(Node):
         - 0.0
         - 1.0
         p:
-        - 202.619 MapWithPose()64416503906
+        - 202.61964416503906
         - 0.0
         - 124.34600067138672
         - 0.0
@@ -143,12 +142,12 @@ class DetectImage(Node):
         binning_x: 0
         binning_y: 0
         roi:
-        x_offset: 0
-        y_offset: 0
-        height: 0
-        width: 0
-        do_rectify: false
-        ---
+            x_offset: 0
+            y_offset: 0
+            height: 0
+            width: 0
+            do_rectify: false
+
         '''
         if msg is None:
             self.get_logger().info('No Camera Info')
@@ -163,15 +162,30 @@ class DetectImage(Node):
         self.binning_y = msg.binning_y
         self.roi = msg.roi
 
-    def ch_image(self):
+    def change_image(self):
         '''
         1. 이미지를 받아옵니다.
         2. info를 이용하여 undistort를 진행합니다. 
         3. 이미지를 반환합니다. 
+
+        데이터 포멧 
+        header:
+            stamp:
+                sec: 1734080303
+                nanosec: 866855742
+            frame_id: oakd_rgb_camera_optical_frame
+        height: 250
+        width: 250
+        encoding: bgr8
+        is_bigendian: 0
+        step: 750
+        data:  -- array 이미지 
         '''
         K = np.array(self.k).reshape((3,3))
-        D = np.array(self.d).reshape((1, 8))
-        self.image = cv2.undistort(self.image, K, D)
+        D = self.d[:5]
+        new_camera_matrix, roi = cv2.getOptimalNewCameraMatrix(K, D, (self.width, self.height), 1, (self.width, self.height))
+        undistorted_image = cv2.undistort(self.image, K, D, None, new_camera_matrix)
+        self.image = undistorted_image
 
 def main(args=None):
     rclpy.init()

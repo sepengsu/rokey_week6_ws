@@ -19,6 +19,7 @@ class MapWithPose(Node):
         self.goal_pose_pub = self.create_publisher(PoseStamped, '/goal_pose', 10)
         self.is_init_pose = False
         self.pose = None
+        self.goal_start = False
 
     def pose_callback(self, msg):
         '''
@@ -43,15 +44,7 @@ class MapWithPose(Node):
             self.is_init_pose = True
 
         self.pose = msg.pose.pose
-        self.get_logger().info(f'Current Pose: {self.pose.position.x}, {self.pose.position.y}')
-    
-    def is_close(self):
-        '''
-        두 위치가 거의 같은지 확인합니다.
-        '''
-        x1, y1 = self.init_pose.position.x, self.init_pose.position.y
-        x2, y2 = self.pose.position.x, self.pose.position.y
-        return (x1-x2)**2 + (y1-y2)**2 < 0.001
+        # self.get_logger().info(f'Current Pose: {self.pose.position.x}, {self.pose.position.y}')
     
     def map_callback(self, msg):
         '''
@@ -64,6 +57,8 @@ class MapWithPose(Node):
         if self.pose is None:
             self.get_logger().info('No Pose')
             return
+        if self.goal_start:
+            return # 목표지점을 찾았으면 더 이상 맵을 받아오지 않습니다.
         self.map = msg
         self.width = msg.info.width
         self.height = msg.info.height
@@ -99,7 +94,7 @@ class MapWithPose(Node):
         현재의 포즈와 points를 이용하여 goal point를 찾습니다.
         '''
         goal_point = None
-        min_distance = 100
+        min_distance = 10000
         for point in points:
             point = self.map_to_world(point)
             if self.distance(point) < min_distance and self.is_goal_safe(point[0], point[1]):
@@ -107,15 +102,18 @@ class MapWithPose(Node):
                 min_distance = self.distance(point)
         if goal_point:
             return goal_point
-        self.get_logger().info('No goal point')
-        min_distance = 100
+        self.get_logger().info('No detectable goal point in safe area')
+
+        min_distance = 10000
         for point in points:
             point = self.map_to_world(point)
             if self.distance(point)< min_distance and self.is_goal_safe(point[0], point[1], safety_radius=0):
                 goal_point = point
                 min_distance = self.distance(point)
+
         if goal_point:
             return goal_point
+        self.get_logger().info('No detectable goal point in unsafe area')
         return None
     
     def map_to_world(self, point):
@@ -140,8 +138,6 @@ class MapWithPose(Node):
         맵 데이터를 이미지로 변환합니다.
         '''
         img = np.array(data).reshape(self.height, self.width)
-        img = np.where(img==-1, 255, img)
-        img = np.where(img==0, 0, img)
         img = img.astype(np.uint8)
         return img
     
@@ -155,9 +151,9 @@ class MapWithPose(Node):
         diff_x = image[:, 1:] - image[:, :-1]  # X 방향 차이
         diff_y = image[1:, :] - image[:-1, :]  # Y 방향 차이
 
-        # 2. 0 → 255 조건 확인
-        boundary_x = ((image[:, :-1] == 0) & (diff_x == 255)).astype(np.uint8) * 255
-        boundary_y = ((image[:-1, :] == 0) & (diff_y == 255)).astype(np.uint8) * 255
+        # 2. 0 → -1 변화를 찾아 경계로 설정
+        boundary_x = ((image[:, :-1] == 0) & (diff_x == -1)).astype(np.uint8) * 255
+        boundary_y = ((image[:-1, :] == 0) & (diff_y == -1)).astype(np.uint8) * 255
 
         # 3. 결과 병합
         binary_edges = np.zeros_like(image, dtype=np.uint8)
@@ -169,7 +165,7 @@ class MapWithPose(Node):
             return None
         return list(zip(points[1], points[0]))
     
-    def is_goal_safe(self, goal_x, goal_y,safety_radius=0.35):
+    def is_goal_safe(self, goal_x, goal_y,safety_radius=0.40):
         """
         목표 좌표 주변이 로봇이 통과 가능한지 확인합니다.
         :param map_data: 맵의 OccupancyGrid 데이터 (list).
@@ -207,7 +203,7 @@ class MapWithPose(Node):
         goal.header.stamp = self.get_clock().now().to_msg()
         goal.pose = self.init_pose
         self.goal_pose_pub.publish(goal)
-        self.map.destroy() # map subscriber 종료
+        self.goal_start = True 
         
         
 def main(args=None):
