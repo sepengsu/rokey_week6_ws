@@ -103,11 +103,12 @@ class MapWithPose(Node):
         min_distance = 100
         for point in points:
             point = self.map_to_world(point)
-            if self.distance(point) < min_distance and self.distance(point) > 0.3:
+            if self.distance(point) < min_distance and self.is_goal_safe(point[0], point[1]):
                 goal_point = point
                 # self.get_logger().info(f'Goal Point updated:')
                 min_distance = self.distance(point)
         return goal_point
+    
     def map_to_world(self, point):
         """
         맵 픽셀 좌표를 월드 좌표로 변환.
@@ -154,18 +155,38 @@ class MapWithPose(Node):
         binary_edges[:, 1:] = boundary_x  # X 방향
         binary_edges[1:, :] += boundary_y  # Y 방향
 
-        # 4. Dilate를 사용해 주위 (3x3)에서 255 확인
-        kernel = np.ones((2, 2), dtype=np.uint8)  # 3x3 커널 생성
-        dilated_edges = cv2.dilate(binary_edges, kernel, iterations=1)  # Dilate 적용
-
-        # 주위 (3x3)에 255가 없는 경우 제거
-        filtered_edges = binary_edges & (dilated_edges == 255)
-
-        # 5. 경계선 좌표 찾기
-        points = np.where(filtered_edges == 255)
+        points = np.where(binary_edges == 255)
         if len(points[0]) == 0:
             return None
         return list(zip(points[1], points[0]))
+    
+    def is_goal_safe(self, goal_x, goal_y,safety_radius=0.15):
+        """
+        목표 좌표 주변이 로봇이 통과 가능한지 확인합니다.
+        :param map_data: 맵의 OccupancyGrid 데이터 (list).
+        :param goal_x: 목표 좌표 X (월드 좌표계).
+        :param goal_y: 목표 좌표 Y (월드 좌표계).
+        :param resolution: 맵의 해상도 (m/pixel).
+        :param origin: 맵의 원점 (Pose).
+        :param robot_radius: 로봇 반경 (m).
+        :return: True(안전) 또는 False(안전하지 않음).
+        """
+        # 월드 좌표 -> 맵 픽셀 좌표 변환
+        map_x = int((goal_x - self.origin.position.x) / self.resolution)
+        map_y = int((goal_y - self.origin.position.y) / self.resolution)
+        
+        # 로봇 반경 -> 픽셀 단위로 변환
+        radius_pixels = int(safety_radius / self.resolution)
+        width, height = self.width, self.height
+
+        # 100인 값에 대해서 반경 만큼 100으로 채우기
+        for y in range(map_y - radius_pixels, map_y + radius_pixels + 1): # y
+            for x in range(map_x - radius_pixels, map_x + radius_pixels + 1): # x
+                if x < 0 or y < 0 or x >= width or y >= height:
+                    continue
+                if self.map.data[y * width + x] == 100: # 장애물이 있으면
+                    return False
+        return True  # 안전
     
     def finish_mapping(self):
         '''
