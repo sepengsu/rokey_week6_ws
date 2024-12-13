@@ -38,10 +38,10 @@ class MapWithPose(Node):
                 w: 0.9970882562180692
 
         '''
-        # if not self.is_init_pose:
-        #     self.get_logger().info('Get initial pose')
-        #     self.init_pose = msg.pose.pose
-        #     self.is_init_pose = True
+        if not self.is_init_pose:
+            self.get_logger().info('Get initial pose')
+            self.init_pose = msg.pose.pose
+            self.is_init_pose = True
 
         self.pose = msg.pose.pose
         self.get_logger().info(f'Current Pose: {self.pose.position.x}, {self.pose.position.y}')
@@ -52,7 +52,7 @@ class MapWithPose(Node):
         '''
         x1, y1 = self.init_pose.position.x, self.init_pose.position.y
         x2, y2 = self.pose.position.x, self.pose.position.y
-        return (x1-x2)**2 + (y1-y2)**2 < 0.01
+        return (x1-x2)**2 + (y1-y2)**2 < 0.001
     
     def map_callback(self, msg):
         '''
@@ -105,7 +105,7 @@ class MapWithPose(Node):
             point = self.map_to_world(point)
             if self.distance(point) < min_distance and self.distance(point) > 0.3:
                 goal_point = point
-                self.get_logger().info(f'Goal Point updated:')
+                # self.get_logger().info(f'Goal Point updated:')
                 min_distance = self.distance(point)
         return goal_point
     def map_to_world(self, point):
@@ -138,8 +138,8 @@ class MapWithPose(Node):
     def find_boundary(self, image):
         '''
         맵에서 경계선을 찾습니다.
-        여기서 픽셀 값이 급격하게 바뀌는 구간 (0 to 255)
-        알고리즘을 찾아 경계선을 찾아 출력합니다.
+        여기서 픽셀 값이 급격하게 바뀌는 구간 (0 to 255)을 찾고,
+        주위 (3x3)에서 255가 없으면 해당 경계를 제거합니다.
         '''
         # 1. 경계 계산 (X, Y 방향에서의 차이)
         diff_x = image[:, 1:] - image[:, :-1]  # X 방향 차이
@@ -153,14 +153,19 @@ class MapWithPose(Node):
         binary_edges = np.zeros_like(image, dtype=np.uint8)
         binary_edges[:, 1:] = boundary_x  # X 방향
         binary_edges[1:, :] += boundary_y  # Y 방향
-        
-        # 4. 경계선 좌표 찾기
-        points = np.where(binary_edges == 255)
+
+        # 4. Dilate를 사용해 주위 (3x3)에서 255 확인
+        kernel = np.ones((2, 2), dtype=np.uint8)  # 3x3 커널 생성
+        dilated_edges = cv2.dilate(binary_edges, kernel, iterations=1)  # Dilate 적용
+
+        # 주위 (3x3)에 255가 없는 경우 제거
+        filtered_edges = binary_edges & (dilated_edges == 255)
+
+        # 5. 경계선 좌표 찾기
+        points = np.where(filtered_edges == 255)
         if len(points[0]) == 0:
             return None
         return list(zip(points[1], points[0]))
-
-
     
     def finish_mapping(self):
         '''
