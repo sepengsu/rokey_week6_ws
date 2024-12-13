@@ -12,6 +12,8 @@ qos_profile = QoSProfile(
     history=10,                              # 히스토리 깊이
     durability=DurabilityPolicy.VOLATILE    # 지속성: VOLATILE (구독 중일 때만 데이터 유지)
 )
+ext_img = './src/week6/week6/image1.png'
+main_img= './src/week6/week6/image2.png'
 class DetectImage(Node):
     def __init__(self):
         '''
@@ -20,7 +22,7 @@ class DetectImage(Node):
         super().__init__('detecting')
         self.info_sub = self.create_subscription(CameraInfo, '/oakd/rgb/preview/camera_info', self.info_callback, 10)
         self.image_sub = self.create_subscription(Image, '/oakd/rgb/preview/image_raw', self.image_callback, 10)
-
+        self.main_img = cv2.imread()
     def image_callback(self, msg):
         data = msg.data
         bridge = CvBridge()

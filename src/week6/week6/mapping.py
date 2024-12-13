@@ -73,6 +73,7 @@ class MapWithPose(Node):
         self.data = msg.data
         self.get_logger().info('Get map')
         # 2. 맵에서 -1, 0 100을 각각 255, 0, 50으로 바꿔 이미지로 출력합니다.
+
         map_img = self.data_to_image(self.data)
         if np.any(map_img == 255) is False:
             self.get_logger().info('Mapping is done')
@@ -80,10 +81,7 @@ class MapWithPose(Node):
         points = self.find_boundary(map_img)
         if points is None:
             self.get_logger().info('No boundary')
-            
-
-
-
+            return
         goal_point = self.find_goal(points)
         self.pub_goal(goal_point)
         
@@ -105,7 +103,7 @@ class MapWithPose(Node):
         min_distance = 100
         for point in points:
             point = self.map_to_world(point)
-            if self.distance(point) < min_distance and self.distance(point) > 0.8:
+            if self.distance(point) < min_distance and self.distance(point) > 0.3:
                 goal_point = point
                 self.get_logger().info(f'Goal Point updated:')
                 min_distance = self.distance(point)
