@@ -14,7 +14,7 @@ import cv2, numpy as np
 class MapWithPose(Node):
     def __init__(self):
         super().__init__('mapping')
-        self.map = self.create_subscription(OccupancyGrid, '/map', self.map_callback, 10)
+        self.map_sub = self.create_subscription(OccupancyGrid, '/map', self.map_callback, 10)
         self.pose_sub = self.create_subscription(PoseWithCovarianceStamped, '/pose', self.pose_callback, 10)
         self.goal_pose_pub = self.create_publisher(PoseStamped, '/goal_pose', 10)
         self.is_init_pose = False
@@ -156,7 +156,7 @@ class MapWithPose(Node):
         binary_edges[:, 1:] = boundary_x  # X 방향
         binary_edges[1:, :] += boundary_y  # Y 방향
 
-        points = np.where(binary_edges == 255)
+        points = np.where(binary_edges == 255) # 경계선 좌표
         if len(points[0]) == 0:
             return None
         return list(zip(points[1], points[0]))
@@ -206,8 +206,29 @@ class MapWithPose(Node):
 def main(args=None):
     rclpy.init()
     node = MapWithPose()
+
+    # 초기화 대기 (최대 5초 동안 초기 데이터 대기)
+    max_wait_time = 3.0  # 초 단위
+    wait_start_time = node.get_clock().now().seconds_nanoseconds()[0]
     while rclpy.ok():
+        rclpy.spin_once(node, timeout_sec=0.1)  # 한 번씩 스핀하며 대기
+        current_time = node.get_clock().now().seconds_nanoseconds()[0]
+        
+        if node.is_init_pose and node.map:  # 초기 포즈와 맵 데이터 수신 확인
+            node.get_logger().info("Initial pose and map received. Starting...")
+            break
+        
+        if current_time - wait_start_time > max_wait_time:
+            node.get_logger().warn("Timeout: Failed to receive initial pose or map within the wait time.")
+            return  # 초기화 실패로 종료
+
+    # ROS 노드 스핀 시작
+    try:
         rclpy.spin(node)
-    rclpy.shutdown()
+    except KeyboardInterrupt:
+        node.get_logger().info('Shutting down...')
+    finally:
+        rclpy.shutdown()
+
 
 
