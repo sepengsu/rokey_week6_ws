@@ -183,6 +183,7 @@ class DetectImage(Node):
         '''
         K = np.array(self.k).reshape((3,3))
         D = self.d[:5]
+        D = np.array(D).reshape((1,5))  # 1x5
         # new_camera_matrix, roi = cv2.getOptimalNewCameraMatrix(K, D, (self.width, self.height), 1, (self.width, self.height))
         undistorted_image = cv2.undistort(self.image, K, D)
         self.image = undistorted_image

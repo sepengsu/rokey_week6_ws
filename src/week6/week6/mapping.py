@@ -65,12 +65,10 @@ class MapWithPose(Node):
         self.origin = msg.info.origin
         self.data = msg.data
         self.get_logger().info('Get map')
-        # 2. 맵에서 -1, 0 100을 각각 255, 0, 50으로 바꿔 이미지로 출력합니다.
+        # 2. 맵에서 -1, 0 100을 각각 이미지로 출력합니다.
+        # -1은 
 
         map_img = self.data_to_image(self.data)
-        if np.any(map_img == -1) is False: # 맵이 -1이 없으면 맵핑이 끝난 것으로 판단합니다.
-            self.get_logger().info('Mapping is done')
-            self.finish_mapping()
         points = self.find_boundary(map_img)
         if points is None: # 경계선이 없으면 맵핑이 끝난 것으로 판단합니다.
             self.get_logger().info('Mapping is done')
@@ -142,7 +140,7 @@ class MapWithPose(Node):
     def find_boundary(self, image):
         '''
         맵에서 경계선을 찾습니다.
-        여기서 픽셀 값이 급격하게 바뀌는 구간 (0 to 255)을 찾고,
+        여기서 픽셀 값이 급격하게 바뀌는 구간 (0 to -1)을 찾고,
         주위 (3x3)에서 255가 없으면 해당 경계를 제거합니다.
         '''
         # 1. 경계 계산 (X, Y 방향에서의 차이)
