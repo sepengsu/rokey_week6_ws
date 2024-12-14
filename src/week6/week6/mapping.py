@@ -44,7 +44,6 @@ class MapWithPose(Node):
             self.is_init_pose = True
 
         self.pose = msg.pose.pose
-        # self.get_logger().info(f'Current Pose: {self.pose.position.x}, {self.pose.position.y}')
     
     def map_callback(self, msg):
         '''
@@ -69,11 +68,11 @@ class MapWithPose(Node):
         # 2. 맵에서 -1, 0 100을 각각 255, 0, 50으로 바꿔 이미지로 출력합니다.
 
         map_img = self.data_to_image(self.data)
-        if np.any(map_img == 255) is False:
+        if np.any(map_img == -1) is False: # 맵이 -1이 없으면 맵핑이 끝난 것으로 판단합니다.
             self.get_logger().info('Mapping is done')
             self.finish_mapping()
         points = self.find_boundary(map_img)
-        if points is None:
+        if points is None: # 경계선이 없으면 맵핑이 끝난 것으로 판단합니다.
             self.get_logger().info('Mapping is done')
             self.finish_mapping()
         goal_point = self.find_goal(points)
@@ -103,7 +102,6 @@ class MapWithPose(Node):
         if goal_point:
             return goal_point
         self.get_logger().info('No detectable goal point in safe area')
-
         min_distance = 10000
         for point in points:
             point = self.map_to_world(point)

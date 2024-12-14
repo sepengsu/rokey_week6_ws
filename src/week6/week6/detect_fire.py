@@ -36,7 +36,7 @@ class DetectImage(Node):
         data = msg.data
         bridge = CvBridge()
         image = bridge.imgmsg_to_cv2(msg, "bgr8")
-
+        self.get_logger().info('이미지 ok')
         self.image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) # 회색 이미지로 변환합니다.
         self.change_image()
         self.detect()
@@ -183,8 +183,8 @@ class DetectImage(Node):
         '''
         K = np.array(self.k).reshape((3,3))
         D = self.d[:5]
-        new_camera_matrix, roi = cv2.getOptimalNewCameraMatrix(K, D, (self.width, self.height), 1, (self.width, self.height))
-        undistorted_image = cv2.undistort(self.image, K, D, None, new_camera_matrix)
+        # new_camera_matrix, roi = cv2.getOptimalNewCameraMatrix(K, D, (self.width, self.height), 1, (self.width, self.height))
+        undistorted_image = cv2.undistort(self.image, K, D)
         self.image = undistorted_image
 
 def main(args=None):
@@ -193,3 +193,29 @@ def main(args=None):
     while rclpy.ok():
         rclpy.spin(node)
     rclpy.shutdown()
+
+
+
+
+
+'''
+
+transforms:
+- header:
+    stamp:
+      sec: 1734086969
+      nanosec: 681052987
+    frame_id: map
+  child_frame_id: odom
+  transform:
+    translation:
+      x: 20.16926142645884
+      y: 11.039336521688346
+      z: -0.12570523118490198
+    rotation:
+      x: -0.008888777910641361
+      y: 0.01704839010350562
+      z: 0.9995527887709227
+      w: 0.0229033727299089
+
+'''
