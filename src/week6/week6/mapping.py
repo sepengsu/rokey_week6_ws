@@ -20,6 +20,7 @@ class MapWithPose(Node):
         self.pose = None
         self.goal_start = False
         self.map = None
+        self.count = 0
 
     def pose_callback(self, msg):
         """
@@ -52,14 +53,16 @@ class MapWithPose(Node):
         self.resolution = msg.info.resolution
         self.origin = msg.info.origin
         self.data = msg.data
-        map_img = self.data_to_image(self.data)
-        points = self.find_boundary(map_img)
+        map_img = self.data_to_image(self.data) # 맵 데이터를 이미지로 변환
+        points = self.find_boundary(map_img) # 경계선 찾기
+        self.count += 1
 
-        if points is None:
-            self.get_logger().info('Mapping complete. No more boundaries detected.')
-            self.finish_mapping()
-            return
-
+        if points is None and not np.any(map_img==255):
+            if self.count > 10:
+                self.get_logger().info('Mapping complete. No more boundaries detected.')
+                self.finish_mapping()
+                return
+            return # 경계선이 없는 경우 추가 작업 수행 안 함    
         goal_point = self.find_goal(points)
         if goal_point:
             self.pub_goal(goal_point)
@@ -128,8 +131,8 @@ class MapWithPose(Node):
         """
         맵 데이터를 2D 이미지로 변환합니다.
         """
-        img = np.array(data).reshape(self.height, self.width)
-        # img = img.astype(np.uint8)
+        img = np.array(data).reshape(self.height, self.width) # 1차원 배열을 2차원 배열로 변환
+        img[img == -1] = 255 # -1을 255로 변환
         return img
 
     def find_boundary(self, image):
@@ -139,8 +142,8 @@ class MapWithPose(Node):
         diff_x = image[:, 1:] - image[:, :-1]
         diff_y = image[1:, :] - image[:-1, :]
 
-        boundary_x = ((image[:, :-1] == 0) & (diff_x == -1)).astype(np.uint8) * 255
-        boundary_y = ((image[:-1, :] == 0) & (diff_y == -1)).astype(np.uint8) * 255
+        boundary_x = ((image[:, :-1] == 0) & (diff_x == 255)).astype(np.uint8) * 255 # 경계선을 찾아서 255로 변환
+        boundary_y = ((image[:-1, :] == 0) & (diff_y == 255)).astype(np.uint8) * 255
 
         binary_edges = np.zeros_like(image, dtype=np.uint8)
         binary_edges[:, 1:] = boundary_x
@@ -155,6 +158,8 @@ class MapWithPose(Node):
     def is_goal_safe(self, goal_x, goal_y, safety_radius=0.4):
         """
         목표 지점 주변이 안전한지 확인합니다.
+        근처에 장애물이 있으면 False를 반환합니다.
+        장애물: 100
         """
         map_x = int((goal_x - self.origin.position.x) / self.resolution)
         map_y = int((goal_y - self.origin.position.y) / self.resolution)

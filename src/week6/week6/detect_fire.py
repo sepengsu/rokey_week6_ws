@@ -10,13 +10,13 @@ from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSDurabilityPolicy
 info_qos = QoSProfile(
     reliability=QoSReliabilityPolicy.RELIABLE,
     durability=QoSDurabilityPolicy.VOLATILE,
-    history=QoSProfile.HISTORY_KEEP_LAST,
+    history=QoSHistoryPolicy.KEEP_LAST,
     depth=10
 )
 img_qos = QoSProfile(
     reliability=QoSReliabilityPolicy.RELIABLE,  # 안정적인 전송
     durability=QoSDurabilityPolicy.VOLATILE,   # 이전 메시지 저장 안 함
-    history=QoSProfile.HISTORY_KEEP_LAST,      # 최신 메시지만 유지
+    history=QoSHistoryPolicy.KEEP_LAST,    # 최신 메시지만 유지
     depth=10                                   # 최대 10개의 메시지 버퍼
 )
 ext_img = './src/week6/week6/image1.png'
