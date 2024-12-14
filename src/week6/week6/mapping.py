@@ -76,7 +76,6 @@ class MapWithPose(Node):
         goal_point = self.find_goal(points)
         self.pub_goal(goal_point)
         
-
     def pub_goal(self, goal_point):
         goal_pose = PoseStamped()
         goal_pose.header.frame_id = 'map'  # 'map' 좌표계 사용
@@ -199,6 +198,7 @@ class MapWithPose(Node):
         goal.header.stamp = self.get_clock().now().to_msg()
         goal.pose = self.init_pose
         self.goal_pose_pub.publish(goal)
+        self.get_logger().info('Go to initial pose')
         self.goal_start = True 
         
         
