@@ -6,14 +6,19 @@ from sensor_msgs.msg import CameraInfo
 import cv2,numpy as np 
 from rclpy.qos import QoSProfile
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, QoSHistoryPolicy
-
-qos_profile = QoSProfile(
-    reliability=ReliabilityPolicy.RELIABLE,      # 신뢰성: 데이터 보장(RELIABLE) 또는 최선형(BEST_EFFORT)
-    history=QoSHistoryPolicy.KEEP_LAST,          # 히스토리 정책
-    depth=10,                                    # KEEP_LAST일 경우 히스토리 깊이
-    durability=DurabilityPolicy.VOLATILE         # 지속성: VOLATILE (구독 중일 때만 데이터 유지)
+from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSDurabilityPolicy
+info_qos = QoSProfile(
+    reliability=QoSReliabilityPolicy.RELIABLE,
+    durability=QoSDurabilityPolicy.VOLATILE,
+    history=QoSProfile.HISTORY_KEEP_LAST,
+    depth=10
 )
-
+img_qos = QoSProfile(
+    reliability=QoSReliabilityPolicy.RELIABLE,  # 안정적인 전송
+    durability=QoSDurabilityPolicy.VOLATILE,   # 이전 메시지 저장 안 함
+    history=QoSProfile.HISTORY_KEEP_LAST,      # 최신 메시지만 유지
+    depth=10                                   # 최대 10개의 메시지 버퍼
+)
 ext_img = './src/week6/week6/image1.png'
 main_img= './src/week6/week6/image2.png'
 EXT = 1
@@ -24,8 +29,8 @@ class DetectImage(Node):
         이미지를 받아 맵에 표시하는 노드를 생성합니다.
         '''
         super().__init__('detecting')
-        self.info_sub = self.create_subscription(CameraInfo, '/oakd/rgb/preview/camera_info', self.info_callback, 10)
-        self.image_sub = self.create_subscription(Image, '/oakd/rgb/preview/image_raw', self.image_callback, 10)
+        self.info_sub = self.create_subscription(CameraInfo, '/oakd/rgb/preview/camera_info', self.info_callback, info_qos)
+        self.image_sub = self.create_subscription(Image, '/oakd/rgb/preview/image_raw', self.image_callback, img_qos)
         self.main_img = cv2.imread(main_img, cv2.IMREAD_GRAYSCALE) # 회색 이미지로 읽어옵니다.
         self.ext_img = cv2.imread(ext_img, cv2.IMREAD_GRAYSCALE) # 회색 이미지로 읽어옵니다.
 

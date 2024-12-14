@@ -5,7 +5,7 @@ from nav_msgs.msg import MapMetaData
 from geometry_msgs.msg import Pose, Twist, Quaternion, PoseStamped
 from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import PoseWithCovarianceStamped
-
+from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSDurabilityPolicy
 import threading
 import cv2
 import numpy as np
@@ -44,16 +44,14 @@ class MapWithPose(Node):
             self.get_logger().warn('No map received.')
             return
 
-        if self.goal_start:
+        if self.goal_start and self.is_init_pose:
             return  # 목표 지점을 설정한 이후에는 추가 작업 수행 안 함
 
-        self.map = msg
         self.width = msg.info.width
         self.height = msg.info.height
         self.resolution = msg.info.resolution
         self.origin = msg.info.origin
         self.data = msg.data
-
         map_img = self.data_to_image(self.data)
         points = self.find_boundary(map_img)
 
@@ -97,6 +95,7 @@ class MapWithPose(Node):
             return goal_point
 
         self.get_logger().warn('No goal found in safe areas. Expanding search.')
+        min_distance = float('inf')
         for point in points:
             world_point = self.map_to_world(point)
             if self.distance(world_point) < min_distance:
@@ -130,7 +129,7 @@ class MapWithPose(Node):
         맵 데이터를 2D 이미지로 변환합니다.
         """
         img = np.array(data).reshape(self.height, self.width)
-        img = img.astype(np.uint8)
+        # img = img.astype(np.uint8)
         return img
 
     def find_boundary(self, image):
@@ -167,7 +166,7 @@ class MapWithPose(Node):
             for x in range(map_x - radius_pixels, map_x + radius_pixels + 1):
                 if x < 0 or y < 0 or x >= width or y >= height:
                     continue
-                if self.map.data[y * width + x] == 100:
+                if self.data[y * width + x] == 100:
                     return False
         return True
 
