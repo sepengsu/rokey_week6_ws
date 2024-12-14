@@ -49,12 +49,15 @@ class MapWithPose(Node):
         '''
         맵을 받아옵니다.
         1. 맵을 받아옵니다.
-        2. 맵에서 -1, 0 100을 각각 255, 0, 100으로 바꿔 이미지로 출력합니다.
+        2. 맵에서 -1, 0 100을 이미지로 출력합니다.
         3. 맵에서 -1과 0의 경계선을 찾아 출력합니다
         4. 경계선을 찾아서 출력합니다.
         '''
         if self.pose is None:
             self.get_logger().info('No Pose')
+            return
+        if msg is None:
+            self.get_logger().warn('no map acc')
             return
         if self.goal_start:
             return # 목표지점을 찾았으면 더 이상 맵을 받아오지 않습니다.
@@ -64,7 +67,6 @@ class MapWithPose(Node):
         self.resolution = msg.info.resolution
         self.origin = msg.info.origin
         self.data = msg.data
-        self.get_logger().info('Get map')
         # 2. 맵에서 -1, 0 100을 각각 이미지로 출력합니다.
         # -1은 
 
@@ -140,7 +142,6 @@ class MapWithPose(Node):
         '''
         맵에서 경계선을 찾습니다.
         여기서 픽셀 값이 급격하게 바뀌는 구간 (0 to -1)을 찾고,
-        주위 (3x3)에서 255가 없으면 해당 경계를 제거합니다.
         '''
         # 1. 경계 계산 (X, Y 방향에서의 차이)
         diff_x = image[:, 1:] - image[:, :-1]  # X 방향 차이
