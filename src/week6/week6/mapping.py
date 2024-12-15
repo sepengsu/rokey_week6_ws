@@ -123,7 +123,7 @@ class MapWithPose(Node):
         img = img.astype(np.uint8)  # uint8로 변환
         return img
 
-    def find_boundary(ori_image):
+    def find_boundary(self,ori_image):
         """맵의 경계선을 찾는 함수 (0과 255의 경계값만 검출)"""
         # 입력 이미지를 이진화 (0과 255로 구성된 마스크 생성)
         binary_image = cv2.inRange(ori_image, 0, 0) | cv2.inRange(ori_image, 255, 255)
