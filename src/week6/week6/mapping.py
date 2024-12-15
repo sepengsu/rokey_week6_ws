@@ -125,9 +125,10 @@ class MapWithPose(Node):
         img[img == -1] = 255  # -1을 255로 변환
         img = img.astype(np.uint8)  # uint8로 변환
         return img
-    def find_boundary(image, min_size=10):
+    def find_boundary(self,image, min_size=10):
         """맵의 경계선을 찾는 함수 (0과 255의 경계값만 검출)"""
         # 입력 이미지는 (0,100,255) 만 존재
+
         mask = (
             ((image == 0) & (np.roll(image, 1, axis=0) == 255)) |
             ((image == 0) & (np.roll(image, -1, axis=0) == 255)) |
