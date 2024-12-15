@@ -8,6 +8,8 @@ from rclpy.qos import QoSProfile
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, QoSHistoryPolicy
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSDurabilityPolicy
 from ament_index_python.packages import get_package_share_directory
+from tf2_ros import Buffer, TransformListener
+from geometry_msgs.msg import TransformStamped
 import tf2_ros # tf2_ros는 tf2를 사용하기 위한 패키지입니다.
 info_qos = QoSProfile(
     reliability=QoSReliabilityPolicy.RELIABLE,
@@ -58,8 +60,14 @@ class DetectImage(Node):
 
         self.tf_transform_get()
     
-    def tf_transform_get():
-        pass
+    def tf_transform_get(self):
+        self.tf_buffer = Buffer() # tf2_ros.Buffer()를 사용하여 tf2_ros.Buffer를 초기화합니다.
+        self.tf_listener = TransformListener(self.tf_buffer, self) # tf2_ros.TransformListener를 사용하여 tf2_ros.TransformListener를 초기화합니다.
+        self.get_logger().info('TF2 Ready')
+        from_frame = 'map'
+        to_frame = 'oakd_rgb_camera_frame'
+        data = self.get_transform(from_frame, to_frame)
+        
     
     def image_load(self):
         # 이미지 

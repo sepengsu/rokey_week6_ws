@@ -140,22 +140,19 @@ class MapWithPose(Node):
         # 연결된 구성 요소 분석
         num_labels, labels = cv2.connectedComponents(binary_edges)
 
-        # 각 경계선의 좌표와 중심 좌표 저장
+        # 각 경계선의 중심 좌표 저장
         centroids = []
 
         for label in range(1, num_labels):  # label 0은 배경
+            # 해당 레이블에 속하는 픽셀 좌표 추출
             points = np.where(labels == label)
-            if len(points[0]) > 2: # 2개 이상만 
-                # 경계선의 좌표
-                boundary_points = list(zip(points[1], points[0]))
-                
-                # 중심 좌표 계산 (중심: x와 y 좌표의 평균)
-                center_x = int(np.mean(points[1]))
-                center_y = int(np.mean(points[0]))
-                centroid = (center_x, center_y)
+            
+            # 중심 좌표 계산 (x와 y 좌표의 평균)
+            center_x = int(np.mean(points[1]))
+            center_y = int(np.mean(points[0]))
+            centroid = (center_x, center_y)
 
-                centroids.append(centroid)
-
+            centroids.append(centroid)
 
         return centroids
 
