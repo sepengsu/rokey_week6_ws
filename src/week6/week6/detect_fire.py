@@ -171,7 +171,8 @@ class DetectImage(Node):
         self.get_logger().info('Detecting Node Started')
         self.info_sub = self.create_subscription(CameraInfo, '/oakd/rgb/preview/camera_info', self.info_callback, info_qos)
         self.image_sub = self.create_subscription(Image, '/oakd/rgb/preview/image_raw', self.image_callback, img_qos)
-        
+
+        self.result = 0
         self.image_load()
 
         self.tf_transform_get()
@@ -182,7 +183,7 @@ class DetectImage(Node):
         self.get_logger().info('TF2 Ready')
         from_frame = 'map'
         to_frame = 'oakd_rgb_camera_frame'
-        data = self.get_transform(from_frame, to_frame)
+        # data = self.get_transform(from_frame, to_frame)
         
     
     def image_load(self):
@@ -436,6 +437,8 @@ class GUI:
         """
         탐지 결과를 업데이트.
         """
+        if self.node.image is None:
+            return
         black_image = np.zeros_like(self.node.image)
         if self.node.result == EXT:
             detected_images = [self.node.image, black_image]

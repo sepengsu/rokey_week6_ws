@@ -49,13 +49,13 @@ class MapWithPose(Node):
         map_img = self.data_to_image(self.data)  # 맵 데이터를 이미지로 변환
 
         points = self.find_boundary(map_img)  # 경계선 찾기
-        self.count += 1
 
-        if points is None and not np.any(map_img == 255):
+        if points is None or len(points) == 0:
             if self.count > 10:
                 self.get_logger().info('Mapping complete. No more boundaries detected.')
                 self.finish_mapping()
                 return
+            self.count += 1
             return  # 경계선이 없으면 작업을 하지 않음    
 
         goal_point = self.find_goal(points)
@@ -87,15 +87,15 @@ class MapWithPose(Node):
                 goal_point = world_point
                 min_distance = self.distance(world_point)
 
-        if not goal_point:
-            self.get_logger().warn('No safe goal found in initial search. Expanding search...')
-            # 두 번째 시도: 안전하지 않더라도 최소 거리인 목표 지점 선택
-            min_distance = float('inf')
-            for point in points:
-                world_point = self.map_to_world(point)
-                if self.distance(world_point) < min_distance and self.is_goal_safe(world_point[0], world_point[1]):
-                    goal_point = world_point
-                    min_distance = self.distance(world_point)
+        # if not goal_point:
+        #     self.get_logger().warn('No safe goal found in initial search. Expanding search...')
+        #     # 두 번째 시도: 안전하지 않더라도 최소 거리인 목표 지점 선택
+        #     min_distance = float('inf')
+        #     for point in points:
+        #         world_point = self.map_to_world(point)
+        #         if self.distance(world_point) < min_distance and self.is_goal_safe(world_point[0], world_point[1], safety_radius=0.3):
+        #             goal_point = world_point
+        #             min_distance = self.distance(world_point)
 
         return goal_point
 
@@ -158,7 +158,7 @@ class MapWithPose(Node):
         return centroids
 
 
-    def is_goal_safe(self, goal_x, goal_y, safety_radius=0.4, obstacle_value=100):
+    def is_goal_safe(self, goal_x, goal_y, safety_radius=0.6, obstacle_value=100):
         """목표 지점 주변이 안전한지 확인하는 함수"""
         map_x = int((goal_x - self.origin.position.x) / self.resolution)
         map_y = int((goal_y - self.origin.position.y) / self.resolution)
