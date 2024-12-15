@@ -1,4 +1,4 @@
-import rclpy    
+import rclpy, os
 from rclpy.node import Node
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
@@ -7,6 +7,8 @@ import cv2,numpy as np
 from rclpy.qos import QoSProfile
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, QoSHistoryPolicy
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSDurabilityPolicy
+from ament_index_python.packages import get_package_share_directory
+import tf2_ros # tf2_ros는 tf2를 사용하기 위한 패키지입니다.
 info_qos = QoSProfile(
     reliability=QoSReliabilityPolicy.RELIABLE,
     durability=QoSDurabilityPolicy.VOLATILE,
@@ -19,20 +21,46 @@ img_qos = QoSProfile(
     history=QoSHistoryPolicy.KEEP_LAST,    # 최신 메시지만 유지
     depth=10                                   # 최대 10개의 메시지 버퍼
 )
-ext_img = './src/week6/week6/image1.png'
-main_img= './src/week6/week6/image2.png'
+dir_path = get_package_share_directory('week6')
+ext_img = os.path.join(dir_path, 'ext_orig.png')
+man_img= os.path.join(dir_path, 'man_orig.png')
 EXT = 1
 MAIN = 2
+
+def match_features(des1, des2):
+    """
+    FLANN 기반 매칭을 수행하고 좋은 매칭점을 반환합니다.
+    """
+    index_params = dict(algorithm=1, trees=5)
+    search_params = dict(checks=50)
+    flann = cv2.FlannBasedMatcher(index_params, search_params)
+    
+    matches = flann.knnMatch(des1, des2, k=2)
+    
+    # Lowe's ratio test 적용
+    good_matches = []
+    for m, n in matches:
+        if m.distance < 0.7 * n.distance:
+            good_matches.append(m)
+    return good_matches
+
 class DetectImage(Node):
     def __init__(self):
         '''
         이미지를 받아 맵에 표시하는 노드를 생성합니다.
         '''
         super().__init__('detecting')
+        self.get_logger().info('Detecting Node Started')
         self.info_sub = self.create_subscription(CameraInfo, '/oakd/rgb/preview/camera_info', self.info_callback, info_qos)
         self.image_sub = self.create_subscription(Image, '/oakd/rgb/preview/image_raw', self.image_callback, img_qos)
-        self.main_img = cv2.imread(main_img, cv2.IMREAD_GRAYSCALE) # 회색 이미지로 읽어옵니다.
+        self.man_img = cv2.imread(man_img, cv2.IMREAD_GRAYSCALE) # 회색 이미지로 읽어옵니다.
+        if self.man_img is None:
+            self.get_logger().warn('No Main Image')
+            raise ValueError('No Main Image')
         self.ext_img = cv2.imread(ext_img, cv2.IMREAD_GRAYSCALE) # 회색 이미지로 읽어옵니다.
+        if self.ext_img is None:
+            self.get_logger().warn('No Ext Image')
+            raise ValueError('No Ext Image')
 
     def image_callback(self, msg):
         if msg is None:
@@ -41,7 +69,6 @@ class DetectImage(Node):
         data = msg.data
         bridge = CvBridge()
         image = bridge.imgmsg_to_cv2(msg, "bgr8")
-        self.get_logger().info('이미지 ok')
         self.image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) # 회색 이미지로 변환합니다.
         self.change_image()
         self.detect()
@@ -56,7 +83,7 @@ class DetectImage(Node):
         if result == EXT:
             self.get_logger().info('Ext Image Detected')
         elif result == MAIN:
-            self.get_logger().info('Main Image Detected')
+            self.get_logger().info('Man Image Detected')
         else:
             self.get_logger().info('No Image Detected')
     
@@ -75,7 +102,7 @@ class DetectImage(Node):
         # 특징점과 디스크립터 추출
     
         keypoints1, descriptors1 = sift.detectAndCompute(self.ext_img, None)
-        keypoints2, descriptors2 = sift.detectAndCompute(self.main_img, None)
+        keypoints2, descriptors2 = sift.detectAndCompute(self.man_img, None)
         keypoints3, descriptors3 = sift.detectAndCompute(self.image, None)
 
 
@@ -84,14 +111,19 @@ class DetectImage(Node):
 
         # 매칭 수행
         matches = bf.match(descriptors1, descriptors3) # ext1과 img 매칭
-        if len(matches) > 15:
+        good_matches = match_features(des1=descriptors1,des2=descriptors3)
+
+        if len(good_matches)> 10:
             return EXT
         
         matches = bf.match(descriptors2, descriptors3) # main과 img 매칭
+        g
+        
         if len(matches) > 15:
             return MAIN
         return 0
     
+
     def info_callback(self, msg):
         '''
         header:
@@ -196,10 +228,12 @@ class DetectImage(Node):
 def main(args=None):
     rclpy.init()
     node = DetectImage()
-    while rclpy.ok():
+    try:
         rclpy.spin(node)
-    rclpy.shutdown()
-
+    except KeyboardInterrupt:
+        pass
+    finally:
+        rclpy.shutdown()
 
 
 

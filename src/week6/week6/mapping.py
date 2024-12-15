@@ -1,21 +1,17 @@
 import rclpy
 from rclpy.node import Node
 from nav_msgs.msg import OccupancyGrid
-from nav_msgs.msg import MapMetaData
-from geometry_msgs.msg import Pose, Twist, Quaternion, PoseStamped
-from sensor_msgs.msg import LaserScan
-from geometry_msgs.msg import PoseWithCovarianceStamped
-from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSDurabilityPolicy
-import threading
-import cv2
+from geometry_msgs.msg import Pose, PoseStamped, PoseWithCovarianceStamped
 import numpy as np
-
+import cv2
 class MapWithPose(Node):
     def __init__(self):
         super().__init__('mapping')
         self.map_sub = self.create_subscription(OccupancyGrid, '/map', self.map_callback, 10)
         self.pose_sub = self.create_subscription(PoseWithCovarianceStamped, '/pose', self.pose_callback, 10)
         self.goal_pose_pub = self.create_publisher(PoseStamped, '/goal_pose', 10)
+
+        # 초기 변수 설정
         self.is_init_pose = False
         self.pose = None
         self.goal_start = False
@@ -23,9 +19,7 @@ class MapWithPose(Node):
         self.count = 0
 
     def pose_callback(self, msg):
-        """
-        주기적으로 로봇의 현재 위치를 받아옵니다. 초기 위치를 기록합니다.
-        """
+        """로봇의 초기 위치를 받아오는 콜백"""
         if not self.is_init_pose:
             self.get_logger().info('Received initial pose.')
             self.init_pose = msg.pose.pose
@@ -34,45 +28,45 @@ class MapWithPose(Node):
         self.pose = msg.pose.pose
     
     def map_callback(self, msg):
-        """
-        맵 데이터를 처리하고 목표 지점을 설정합니다.
-        """
-        if self.pose is None:
-            self.get_logger().info('No pose received yet.')
+        """맵 데이터를 처리하고 목표 지점을 설정하는 콜백"""
+        if not self.is_init_pose or self.pose is None:
+            self.get_logger().info('Waiting for pose information...')
             return
 
-        if msg is None:
-            self.get_logger().warn('No map received.')
+        if msg is None or len(msg.data) == 0:
+            self.get_logger().warn('Received empty map or no map data.')
             return
 
-        if self.goal_start and self.is_init_pose:
-            return  # 목표 지점을 설정한 이후에는 추가 작업 수행 안 함
+        if self.goal_start:
+            return  # 목표 지점을 설정한 이후에는 추가 작업을 하지 않음
 
+        # 맵 정보 처리
         self.width = msg.info.width
         self.height = msg.info.height
         self.resolution = msg.info.resolution
         self.origin = msg.info.origin
         self.data = msg.data
-        map_img = self.data_to_image(self.data) # 맵 데이터를 이미지로 변환
-        points = self.find_boundary(map_img) # 경계선 찾기
+        map_img = self.data_to_image(self.data)  # 맵 데이터를 이미지로 변환
+
+        points = self.find_boundary(map_img)  # 경계선 찾기
         self.count += 1
 
-        if points is None and not np.any(map_img==255):
+        if points is None and not np.any(map_img == 255):
             if self.count > 10:
                 self.get_logger().info('Mapping complete. No more boundaries detected.')
                 self.finish_mapping()
                 return
-            return # 경계선이 없는 경우 추가 작업 수행 안 함    
+            return  # 경계선이 없으면 작업을 하지 않음    
+
         goal_point = self.find_goal(points)
         if goal_point:
             self.pub_goal(goal_point)
         else:
             self.get_logger().warn('No valid goal point detected.')
 
+
     def pub_goal(self, goal_point):
-        """
-        목표 지점을 ROS 메시지로 퍼블리시합니다.
-        """
+        """목표 지점을 퍼블리시하는 함수"""
         goal_pose = PoseStamped()
         goal_pose.header.frame_id = 'map'
         goal_pose.header.stamp = self.get_clock().now().to_msg()
@@ -82,44 +76,39 @@ class MapWithPose(Node):
         self.goal_pose_pub.publish(goal_pose)
 
     def find_goal(self, points):
-        """
-        경계선 점 중에서 안전한 목표 지점을 찾습니다.
-        """
+        """경계선 점 중에서 안전한 목표 지점을 찾는 함수"""
         goal_point = None
         min_distance = float('inf')
 
+        # 첫 번째 시도: 안전한 목표 지점 찾기
         for point in points:
             world_point = self.map_to_world(point)
             if self.distance(world_point) < min_distance and self.is_goal_safe(world_point[0], world_point[1]):
                 goal_point = world_point
                 min_distance = self.distance(world_point)
 
-        if goal_point:
-            return goal_point
-
-        self.get_logger().warn('No goal found in safe areas. Expanding search.')
-        min_distance = float('inf')
-        for point in points:
-            world_point = self.map_to_world(point)
-            if self.distance(world_point) < min_distance:
-                goal_point = world_point
-                min_distance = self.distance(world_point)
+        if not goal_point:
+            self.get_logger().warn('No safe goal found in initial search. Expanding search...')
+            # 두 번째 시도: 안전하지 않더라도 최소 거리인 목표 지점 선택
+            min_distance = float('inf')
+            for point in points:
+                world_point = self.map_to_world(point)
+                if self.distance(world_point) < min_distance and self.is_goal_safe(world_point[0], world_point[1]):
+                    goal_point = world_point
+                    min_distance = self.distance(world_point)
 
         return goal_point
+
     
     def map_to_world(self, point):
-        """
-        맵 픽셀 좌표를 월드 좌표로 변환합니다.
-        """
+        """맵 픽셀 좌표를 월드 좌표로 변환하는 함수"""
         x_pixel, y_pixel = point
         x_world = float(x_pixel * self.resolution + self.origin.position.x)
         y_world = float(y_pixel * self.resolution + self.origin.position.y)
         return x_world, y_world
 
     def distance(self, point):
-        """
-        현재 위치와 목표 지점 간의 유클리드 거리 계산.
-        """
+        """현재 위치와 목표 지점 간의 유클리드 거리 계산"""
         if self.pose is None:
             return float('inf')
         x = self.pose.position.x
@@ -128,57 +117,55 @@ class MapWithPose(Node):
         return np.sqrt((x - x1) ** 2 + (y - y1) ** 2)
 
     def data_to_image(self, data):
-        """
-        맵 데이터를 2D 이미지로 변환합니다.
-        """
-        img = np.array(data).reshape(self.height, self.width) # 1차원 배열을 2차원 배열로 변환
-        img[img == -1] = 255 # -1을 255로 변환
+        """맵 데이터를 2D 이미지로 변환하는 함수"""
+        img = np.array(data).reshape(self.height, self.width)  # 1D 배열을 2D 배열로 변환
+        img[img == -1] = 255  # -1을 255로 변환
+        image = np.uint8(image)
         return img
 
-    def find_boundary(self, image):
-        """
-        맵의 경계선을 찾습니다.
-        """
-        diff_x = image[:, 1:] - image[:, :-1]
-        diff_y = image[1:, :] - image[:-1, :]
+    def find_boundary(self, ori_image):
+        """맵의 경계선을 찾는 함수"""
+        image = ori_image.copy()
+        image = cv2.inRange(image, 0, 0) | cv2.inRange(image, 255, 255)
 
-        boundary_x = ((image[:, :-1] == 0) & (diff_x == 255)).astype(np.uint8) * 255 # 경계선을 찾아서 255로 변환
-        boundary_y = ((image[:-1, :] == 0) & (diff_y == 255)).astype(np.uint8) * 255
+        # 이미지의 경계선을 찾기 위해 Canny 엣지 검출기를 사용
+        edges = cv2.Canny(image, threshold1=50, threshold2=150)
 
-        binary_edges = np.zeros_like(image, dtype=np.uint8)
-        binary_edges[:, 1:] = boundary_x
-        binary_edges[1:, :] += boundary_y
+        # 경계선 확장을 위해 dilation을 사용
+        dilated_edges = cv2.dilate(edges, None, iterations=1)
+        
+        # 노이즈를 줄이기 위해 erosion을 사용
+        binary_edges = cv2.erode(dilated_edges, None, iterations=1)
 
+        # 경계선의 좌표 찾기
         points = np.where(binary_edges == 255)
-        if len(points[0]) == 0:
-            return None
 
-        return list(zip(points[1], points[0]))
+        # 경계선이 있다면 그 점들의 좌표 반환
+        return list(zip(points[1], points[0])) if len(points[0]) > 0 else None
 
-    def is_goal_safe(self, goal_x, goal_y, safety_radius=0.4):
-        """
-        목표 지점 주변이 안전한지 확인합니다.
-        근처에 장애물이 있으면 False를 반환합니다.
-        장애물: 100
-        """
+
+    def is_goal_safe(self, goal_x, goal_y, safety_radius=0.4, obstacle_value=100):
+        """목표 지점 주변이 안전한지 확인하는 함수"""
         map_x = int((goal_x - self.origin.position.x) / self.resolution)
         map_y = int((goal_y - self.origin.position.y) / self.resolution)
-
         radius_pixels = int(safety_radius / self.resolution)
-        width, height = self.width, self.height
 
+        # 장애물 범위 처리
         for y in range(map_y - radius_pixels, map_y + radius_pixels + 1):
             for x in range(map_x - radius_pixels, map_x + radius_pixels + 1):
-                if x < 0 or y < 0 or x >= width or y >= height:
+                if x < 0 or y < 0 or x >= self.width or y >= self.height:
                     continue
-                if self.data[y * width + x] == 100:
+                if self.data[y * self.width + x] == obstacle_value:
                     return False
         return True
 
+
     def finish_mapping(self):
-        """
-        맵핑 완료 시 초기 위치로 이동합니다.
-        """
+        """맵핑 완료 시 초기 위치로 돌아가는 함수"""
+        if self.goal_start:
+            self.get_logger().info('Mapping already finished, returning to initial pose.')
+            return  # 이미 목표 지점이 설정된 경우, 종료 처리
+
         self.get_logger().info('Mapping finished. Returning to initial pose.')
         goal = PoseStamped()
         goal.header.frame_id = 'map'
@@ -192,20 +179,12 @@ def main(args=None):
     rclpy.init()
     node = MapWithPose()
 
-    max_wait_time = 3.0
-    wait_start_time = node.get_clock().now().seconds_nanoseconds()[0]
-
+    # 초기 맵과 포즈가 수신될 때까지 기다림
     while rclpy.ok():
         rclpy.spin_once(node, timeout_sec=0.1)
-        current_time = node.get_clock().now().seconds_nanoseconds()[0]
-
         if node.is_init_pose and node.map:
             node.get_logger().info("Initial pose and map received. Starting...")
             break
-
-        if current_time - wait_start_time > max_wait_time:
-            node.get_logger().warn("Timeout: Initial pose or map not received.")
-            return
 
     try:
         rclpy.spin(node)
