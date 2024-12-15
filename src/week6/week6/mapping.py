@@ -125,17 +125,22 @@ class MapWithPose(Node):
         img[img == -1] = 255  # -1을 255로 변환
         img = img.astype(np.uint8)  # uint8로 변환
         return img
-
-    def find_boundary(ori_image, min_size=10):
+    def find_boundary(image, min_size=10):
         """맵의 경계선을 찾는 함수 (0과 255의 경계값만 검출)"""
-        # 입력 이미지를 이진화 (0과 255로 구성된 마스크 생성)
-        binary_image = cv2.inRange(ori_image, 0, 50) | cv2.inRange(ori_image, 200, 255)
+        # 입력 이미지는 (0,100,255) 만 존재
+        mask = (
+            ((image == 0) & (np.roll(image, 1, axis=0) == 255)) |
+            ((image == 0) & (np.roll(image, -1, axis=0) == 255)) |
+            ((image == 0) & (np.roll(image, 1, axis=1) == 255)) |
+            ((image == 0) & (np.roll(image, -1, axis=1) == 255))
+        )
 
-        # Canny 엣지 검출기로 경계 검출
-        edges = cv2.Canny(binary_image, threshold1=50, threshold2=150)
+        edge_image = np.zeros_like(image, dtype=np.uint8)
+        edge_image[mask] = 255
 
         # 경계 확장을 위해 Dilation 적용
-        dilated_edges = cv2.dilate(edges, None, iterations=1)
+        kernel = np.ones((3, 3), np.uint8)
+        dilated_edges = cv2.dilate(edge_image, kernel, iterations=1)
 
         # 연결된 구성 요소 분석
         num_labels, labels = cv2.connectedComponents(dilated_edges)
@@ -149,7 +154,7 @@ class MapWithPose(Node):
                 center_y = int(np.mean(points[0]))
                 centroids.append((center_x, center_y))
 
-        return centroids, dilated_edges
+        return centroids
 
 
     def is_goal_safe(self, goal_x, goal_y, safety_radius=0.4, obstacle_value=100):
