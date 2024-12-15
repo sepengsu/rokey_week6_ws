@@ -117,16 +117,19 @@ class MapWithPose(Node):
         return np.sqrt((x - x1) ** 2 + (y - y1) ** 2)
 
     def data_to_image(self, data):
-        """맵 데이터를 2D 이미지로 변환하는 함수"""
+        """맵 데이터를 2D 이미지로 변환하는 함수
+        -1: 255로 변환, 
+        100: 그대로 두기 
+        """
         img = np.array(data).reshape(self.height, self.width)  # 1D 배열을 2D 배열로 변환
         img[img == -1] = 255  # -1을 255로 변환
         img = img.astype(np.uint8)  # uint8로 변환
         return img
 
-    def find_boundary(self,ori_image):
+    def find_boundary(ori_image, min_size=10):
         """맵의 경계선을 찾는 함수 (0과 255의 경계값만 검출)"""
         # 입력 이미지를 이진화 (0과 255로 구성된 마스크 생성)
-        binary_image = cv2.inRange(ori_image, 0, 0) | cv2.inRange(ori_image, 255, 255)
+        binary_image = cv2.inRange(ori_image, 0, 50) | cv2.inRange(ori_image, 200, 255)
 
         # Canny 엣지 검출기로 경계 검출
         edges = cv2.Canny(binary_image, threshold1=50, threshold2=150)
@@ -134,23 +137,20 @@ class MapWithPose(Node):
         # 경계 확장을 위해 Dilation 적용
         dilated_edges = cv2.dilate(edges, None, iterations=1)
 
-        # 노이즈 제거를 위해 Erosion 적용
-        refined_edges = cv2.erode(dilated_edges, None, iterations=1)
-
         # 연결된 구성 요소 분석
-        num_labels, labels = cv2.connectedComponents(refined_edges)
+        num_labels, labels = cv2.connectedComponents(dilated_edges)
 
         # 각 경계선의 중심 좌표 계산
         centroids = []
         for label in range(1, num_labels):  # label 0은 배경
-            # 해당 레이블에 속하는 픽셀 좌표 추출
             points = np.where(labels == label)
-            if len(points[0]) > 0:  # 픽셀 존재 여부 확인
+            if len(points[0]) > min_size:  # 노이즈 필터링
                 center_x = int(np.mean(points[1]))
                 center_y = int(np.mean(points[0]))
                 centroids.append((center_x, center_y))
 
-        return centroids
+        return centroids, dilated_edges
+
 
     def is_goal_safe(self, goal_x, goal_y, safety_radius=0.4, obstacle_value=100):
         """목표 지점 주변이 안전한지 확인하는 함수"""
