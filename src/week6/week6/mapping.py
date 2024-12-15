@@ -120,7 +120,7 @@ class MapWithPose(Node):
         """맵 데이터를 2D 이미지로 변환하는 함수"""
         img = np.array(data).reshape(self.height, self.width)  # 1D 배열을 2D 배열로 변환
         img[img == -1] = 255  # -1을 255로 변환
-        image = np.uint8(image)
+        img = img.astype(np.uint8)  # uint8로 변환
         return img
 
     def find_boundary(self, ori_image):

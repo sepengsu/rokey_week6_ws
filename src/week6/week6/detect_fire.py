@@ -27,7 +27,7 @@ man_img= os.path.join(dir_path, 'man_orig.png')
 EXT = 1
 MAIN = 2
 
-def match_features(des1, des2):
+def match_features(des1, des2,theshold=0.7):
     """
     FLANN 기반 매칭을 수행하고 좋은 매칭점을 반환합니다.
     """
@@ -40,7 +40,7 @@ def match_features(des1, des2):
     # Lowe's ratio test 적용
     good_matches = []
     for m, n in matches:
-        if m.distance < 0.7 * n.distance:
+        if m.distance < theshold * n.distance:
             good_matches.append(m)
     return good_matches
 
@@ -53,6 +53,16 @@ class DetectImage(Node):
         self.get_logger().info('Detecting Node Started')
         self.info_sub = self.create_subscription(CameraInfo, '/oakd/rgb/preview/camera_info', self.info_callback, info_qos)
         self.image_sub = self.create_subscription(Image, '/oakd/rgb/preview/image_raw', self.image_callback, img_qos)
+        
+        self.image_load()
+
+        self.tf_transform_get()
+    
+    def tf_transform_get():
+        pass
+    
+    def image_load(self):
+        # 이미지 
         self.man_img = cv2.imread(man_img, cv2.IMREAD_GRAYSCALE) # 회색 이미지로 읽어옵니다.
         if self.man_img is None:
             self.get_logger().warn('No Main Image')
@@ -61,6 +71,7 @@ class DetectImage(Node):
         if self.ext_img is None:
             self.get_logger().warn('No Ext Image')
             raise ValueError('No Ext Image')
+        
 
     def image_callback(self, msg):
         if msg is None:
@@ -221,7 +232,6 @@ class DetectImage(Node):
         K = np.array(self.k).reshape((3,3))
         D = self.d[:5]
         D = np.array(D).reshape((1,5))  # 1x5
-        # new_camera_matrix, roi = cv2.getOptimalNewCameraMatrix(K, D, (self.width, self.height), 1, (self.width, self.height))
         undistorted_image = cv2.undistort(self.image, K, D)
         self.image = undistorted_image
 
