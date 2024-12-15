@@ -117,7 +117,7 @@ class DetectImage(Node):
             return EXT
         
         matches = bf.match(descriptors2, descriptors3) # main과 img 매칭
-        g
+        good_matches = match_features(descriptors2,descriptors3)
         
         if len(matches) > 15:
             return MAIN
