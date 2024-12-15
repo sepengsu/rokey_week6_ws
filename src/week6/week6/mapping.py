@@ -123,36 +123,32 @@ class MapWithPose(Node):
         img = img.astype(np.uint8)  # uint8로 변환
         return img
 
-    def find_boundary(self, ori_image):
-        """맵의 경계선을 찾는 함수"""
-        image = ori_image.copy()
-        image = cv2.inRange(image, 0, 0) | cv2.inRange(image, 255, 255)
+    def find_boundary(ori_image):
+        """맵의 경계선을 찾는 함수 (0과 255의 경계값만 검출)"""
+        # 입력 이미지를 이진화 (0과 255로 구성된 마스크 생성)
+        binary_image = cv2.inRange(ori_image, 0, 0) | cv2.inRange(ori_image, 255, 255)
 
-        # 이미지의 경계선을 찾기 위해 Canny 엣지 검출기를 사용
-        edges = cv2.Canny(image, threshold1=50, threshold2=150)
+        # Canny 엣지 검출기로 경계 검출
+        edges = cv2.Canny(binary_image, threshold1=50, threshold2=150)
 
-        # 경계선 확장을 위해 dilation을 사용
+        # 경계 확장을 위해 Dilation 적용
         dilated_edges = cv2.dilate(edges, None, iterations=1)
-        
-        # 노이즈를 줄이기 위해 erosion을 사용
-        binary_edges = cv2.erode(dilated_edges, None, iterations=1)
+
+        # 노이즈 제거를 위해 Erosion 적용
+        refined_edges = cv2.erode(dilated_edges, None, iterations=1)
 
         # 연결된 구성 요소 분석
-        num_labels, labels = cv2.connectedComponents(binary_edges)
+        num_labels, labels = cv2.connectedComponents(refined_edges)
 
-        # 각 경계선의 중심 좌표 저장
+        # 각 경계선의 중심 좌표 계산
         centroids = []
-
         for label in range(1, num_labels):  # label 0은 배경
             # 해당 레이블에 속하는 픽셀 좌표 추출
             points = np.where(labels == label)
-            
-            # 중심 좌표 계산 (x와 y 좌표의 평균)
-            center_x = int(np.mean(points[1]))
-            center_y = int(np.mean(points[0]))
-            centroid = (center_x, center_y)
-
-            centroids.append(centroid)
+            if len(points[0]) > 0:  # 픽셀 존재 여부 확인
+                center_x = int(np.mean(points[1]))
+                center_y = int(np.mean(points[0]))
+                centroids.append((center_x, center_y))
 
         return centroids
 
