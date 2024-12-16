@@ -1,6 +1,6 @@
 import rclpy, os
 from rclpy.node import Node
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import CompressedImage, Image
 from cv_bridge import CvBridge
 from sensor_msgs.msg import CameraInfo
 import cv2,numpy as np 
@@ -11,12 +11,14 @@ from ament_index_python.packages import get_package_share_directory
 from tf2_ros import Buffer, TransformListener
 from geometry_msgs.msg import TransformStamped
 from PyQt5.QtWidgets import QApplication, QMainWindow, QLabel, QVBoxLayout, QHBoxLayout, QWidget, QGridLayout
+from PyQt5.QtWidgets import QPushButton
 from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtCore import Qt
 from nav_msgs.msg import OccupancyGrid
 from PyQt5.QtCore import QThread, pyqtSignal
 from rclpy.duration import Duration
 import sys, time
+
 
 MATRIX =   np.array([
     [1.000, -0.003, 0.000, -0.060],
@@ -25,6 +27,10 @@ MATRIX =   np.array([
     [0.000, 0.000, 0.000, 1.000]
 ]) # camera to map tf matrix
 
+# MATRIX = np.array([0.770,-0.638,0.000,0.000
+#                 ,-0.638,-0.770,0.000,0.000
+#                 ,0.000,0.000,1.000,0.244
+#                 ,0.000,0.000,0.000,1.000]).reshape((4,4))  
 
 info_qos = QoSProfile(
     reliability=QoSReliabilityPolicy.RELIABLE,
@@ -54,15 +60,16 @@ MAN_IMG = {
 }
 
 class SIFTDetector():
-    def __init__(self,ori_img,cap_img):
+    def __init__(self,ori_img,cap_img,types: int):
         self.ori_img = ori_img
         self.cap_img = cap_img
         self.result = False
+        self.types = types
         self.detect()
 
     def detect(self):
         """
-        SIFT 알고리즘을 사용하여 이미지 간 매칭 및 객체 탐지 수행.
+        SIFT 알고리즘을 사용하여 이미지 간 매칭 및 객체 탐지 수행 (강화된 검증 포함).
         """
         # SIFT 생성 및 특징점 추출
         self.sift = cv2.SIFT_create()
@@ -73,17 +80,39 @@ class SIFTDetector():
             print("Insufficient features in one of the images.")
             self.result = False
             return
+        if len(self.kp1) < 2 or len(self.kp2) < 2:
+            print("Insufficient keypoints in one of the images.")
+            self.result = False
+            return
 
         # 특징 매칭
         self.good_matches = self.match_features(self.des1, self.des2)
 
         # 충분한 매칭점이 있는지 확인
-        if len(self.good_matches) > 15:
-            # Homography 계산 for bounding box
+        if self.types == 1: # ext
+            n = 35
+        elif self.types == 2: # man
+            n = 100
+        if len(self.good_matches) > n: 
             try:
-                self.homography, _ = self.compute_homography(self.good_matches)
+                # Homography 계산 및 검증
+                self.homography, mask = self.compute_homography(self.good_matches)
+
+                # 추가 검증: 투영 오류
+                if not self.validate_projection_error(self.good_matches, mask):
+                    self.result = False
+                    return
+
                 self.bounds = self.calculate_center_and_size(self.homography, self.ori_img)
-                self.result = True  
+                # 캡처 이미지의 좌표로 self.points 저장
+                # 캡처 이미지의 좌표로 self.points 저장
+                self.points = [
+                    (self.kp2[match.trainIdx].pt[0], self.kp2[match.trainIdx].pt[1]) for match in self.good_matches
+                ]
+                if len(self.bounds) < 2: # bounds가 없을 경우
+                    self.result = False
+                    return
+                self.result = True
             except Exception as e:
                 print(f"Error calculating homography: {e}")
                 self.result = False
@@ -91,8 +120,30 @@ class SIFTDetector():
             print("Not enough good matches.")
             self.result = False
 
+    def validate_projection_error(self, good_matches, mask, threshold=5.0):
+        """
+        투영 오류를 계산하여 매칭 품질을 추가적으로 검증.
+        
+        Args:
+            good_matches (list): 매칭된 키포인트 리스트.
+            mask (np.ndarray): RANSAC에 의해 필터링된 매칭 마스크.
+            threshold (float): 허용 투영 오류 임계값.
+        
+        Returns:
+            bool: 투영 오류가 허용 임계값 이하인지 여부.
+        """
+        src_pts = np.float32([self.kp1[m.queryIdx].pt for m in good_matches]).reshape(-1, 2)
+        dst_pts = np.float32([self.kp2[m.trainIdx].pt for m in good_matches]).reshape(-1, 2)
 
-    def match_features(self,des1, des2,theshold=0.7):
+        projected_pts = cv2.perspectiveTransform(src_pts.reshape(-1, 1, 2), self.homography).reshape(-1, 2)
+
+        errors = np.linalg.norm(projected_pts - dst_pts, axis=1)
+        mean_error = np.mean(errors[mask.ravel() == 1])
+
+        print(f"Mean projection error: {mean_error:.2f}")
+        return mean_error < threshold
+
+    def match_features(self,des1, des2,theshold=0.8):
         """
         FLANN 기반 매칭을 수행하고 좋은 매칭점을 반환합니다.
         """
@@ -116,7 +167,7 @@ class SIFTDetector():
         src_pts = np.float32([self.kp1[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
         dst_pts = np.float32([self.kp2[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
 
-        homography, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+        homography, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 3.0)
         if homography is None:
             raise ValueError("Homography calculation failed.")
         return homography, mask
@@ -155,40 +206,25 @@ class SIFTDetector():
 
 
 class Selector():
-    def __init__(self,bonuds: tuple):
+    def __init__(self, points: list, bounds: tuple):
         '''
         bounds: (center_x, center_y), (width, height)
         '''
-        self.bounds = bonuds 
+        self.points = points
+        self.bounds = bounds
         self.select()
-        self.change()
+
 
     def __call__(self):
-        return self.scale_points
+        return self.points
     def select(self):
         '''
-        1. 중심 좌표, 왼쪽 상단 좌표, 오른쪽 상단 좌표, 왼쪽 하단 좌표, 오른쪽 하단 좌표를 얻는다.
-        2. 왼쪽 상단 좌표를 (0,0)으로 가정할 때의 5개의 좌표를 변환한다. 
+        1.  임의로 30개 좌표를 선택합니다.
         '''
-        self.points = []
-        (center_x, center_y), (width, height) = self.bounds
-        self.points.append((center_x, center_y)) # 중심 좌표
-        self.points.append((center_x - width/2, center_y - height/2)) # 왼쪽 상단 좌표
-        self.points.append((center_x + width/2, center_y - height/2)) # 오른쪽 상단 좌표
-        self.points.append((center_x - width/2, center_y + height/2)) # 왼쪽 하단 좌표
-        self.points.append((center_x + width/2, center_y + height/2)) # 오른쪽 하단 좌표
+        import random
+        self.points = random.sample(self.points, 30)
 
-    def change(self):
-        '''
-        5개의 좌표를 변환합니다.
-        왼쪽 상단 좌표를 (0,0)으로 가정할 때의 5개의 좌표를 반환합니다.
-        '''
-        left_top = self.points[1]
-        self.scale_points = []
-        for point in self.points:
-            x = point[0] - left_top[0]
-            y = point[1] - left_top[1]
-            self.scale_points.append((x,y))
+
 
 class Pointer:
     def __init__(self,camera_matrix: np.ndarray, dist_coeffs: np.ndarray,tf_map_camera: np.ndarray):
@@ -196,33 +232,42 @@ class Pointer:
         self.D = dist_coeffs 
         self.tf_map_camera = tf_map_camera
 
-    def __call__(self, piexl_list: list, scale: tuple):
+    def __call__(self, pixel_list: list, scale: tuple):
         '''
-        input: piexl_list: [(x1,y1),(x2,y2),...] # pixel 좌표계
+        input: pixel_list: [(x1,y1),(x2,y2),...] # pixel 좌표계
         scale: (width, height) # meter 단위 이미지의 실제 크기
 
         output: (x,y) # meter 단위 (map 상에서의 좌표)
         '''
-        self.piexl_list = piexl_list
+        self.pixel_list = pixel_list
         self.scale = scale
         self.pixel_to_scale()
         self.pnp_and_tf()
         self.final_tf()
         return self.pointer()
-    
+        
     def pixel_to_scale(self):
         '''
-        1. pixel을 meter로 변환합니다.
-        2. 변환된 meter를 반환합니다.
-        --> 이게 2d 데이터를 3d 데이터로 변환하는 것이다.
+        1. 픽셀 좌표를 맵의 실제 크기(scale)를 기준으로 3D 좌표계로 변환합니다.
+        2. 변환된 3D 좌표 리스트를 반환합니다.
         '''
         self.scale_list = []
-        for piexl in self.piexl_list:
-            x, y = piexl
-            width, height = self.scale
-            x = (x - width/2) * width / width
-            y = (y - height/2) * height / height
-            self.scale_list.append((x,y,0))
+        image_width, image_height = self.scale  # 이미지의 실제 크기 (width, height in meters)
+
+        for pixel in self.pixel_list:
+            px, py = pixel  # 픽셀 좌표 (x, y)
+
+            # 중심 좌표 기준으로 픽셀 좌표를 정규화
+            normalized_x = (px - self.K[0, 2]) / self.K[0, 0]  # (x - cx) / fx
+            normalized_y = (py - self.K[1, 2]) / self.K[1, 1]  # (y - cy) / fy
+
+            # 이미지 크기를 기준으로 실제 맵 단위의 좌표 계산 (단위: m)
+            scaled_x = normalized_x * image_width
+            scaled_y = normalized_y * image_height
+
+            # z 좌표는 0으로 설정 (카메라의 평면 투영)
+            self.scale_list.append((scaled_x, scaled_y, 0))
+
 
     def pnp_and_tf(self):
         '''
@@ -235,9 +280,13 @@ class Pointer:
         이 함수를 통하여 tf를 구한다. 
         이 tf는 camera to image의 tf이다.
         '''
-        object_points = np.array(self.scale_list)
-        image_points = np.array(self.piexl_list)
-        ret, rvec, tvec = cv2.solvePnP(object_points, image_points, self.K, self.D)
+        object_points = np.array(self.scale_list) # 3d 데이터, meter 좌표계
+        image_points = np.array(self.pixel_list) # 2d 데이터, pixel 좌표계
+
+        ret, rvec, tvec, inliers = cv2.solvePnPRansac(
+            object_points, image_points, self.K, self.D
+        )
+
         self.tf_camera_image =np.eye(4)
         self.tf_camera_image[:3, :3] = cv2.Rodrigues(rvec)[0]
         self.tf_camera_image[:3, 3] = tvec.flatten()
@@ -301,12 +350,18 @@ class DetectImage(Node):
         super().__init__('detecting')
         self.get_logger().info('Detecting Node Started')
         self.info_sub = self.create_subscription(CameraInfo, '/oakd/rgb/preview/camera_info', self.info_callback, info_qos)
-        self.image_sub = self.create_subscription(Image, '/oakd/rgb/preview/image_raw', self.image_callback, img_qos)
+        self.image_sub = self.create_subscription(CompressedImage, '/oakd/rgb/preview/image_raw/compressed', self.image_callback, img_qos)
         self.map_sub = self.create_subscription(OccupancyGrid, '/map', self.map_callback, 10)
+        self.pose_sub = self.create_subscription(TransformStamped, '/pose', self.pose_callback, 10)
         self.initing()
         self.image_load()
 
         self.tf_transform_get()
+
+    def pose_callback(self, msg):
+        '''
+        '''
+        self.pose = [msg.position.x, msg.position.y]
 
     def map_callback(self, msg):
         """맵 데이터를 처리하고 목표 지점을 설정하는 콜백"""
@@ -341,8 +396,10 @@ class DetectImage(Node):
         # image
         self.image_height = None
         self.image_width = None
-        self.image = None
+        self.cam_image = None
         self.undistort_image = None
+
+        self.bounds = None
         
         # tf
         self.tf_buffer = Buffer()
@@ -362,6 +419,9 @@ class DetectImage(Node):
         self.map_img = None
 
         self.point_img_map = None
+
+        # pose
+        self.pose = None
 
     def tf_transform_get(self):
 
@@ -411,7 +471,8 @@ class DetectImage(Node):
         ])
 
     def get_tf_static(self, from_frame, to_frame):
-        """
+        """        '''
+        '''
         Fetch static transform from 'from_frame' to 'to_frame'.
         """
         try:
@@ -420,7 +481,7 @@ class DetectImage(Node):
                 from_frame,
                 to_frame,
                 rclpy.time.Time(seconds=0),  # Use static transform time
-                timeout=Duration(seconds=3.0)
+                timeout=Duration(seconds=2.0)
             )
             return transform
         except Exception as e:  
@@ -437,14 +498,12 @@ class DetectImage(Node):
                 from_frame,
                 to_frame,
                 rclpy.time.Time(),  # Use current time
-                timeout=Duration(seconds=5.0)
+                timeout=Duration(seconds=2.0)
             )
             return transform
         except Exception as e:
             self.get_logger().error(f'Failed to get dynamic transform: {str(e)}')
             return None
-
-
 
     def image_load(self):
         # 이미지 
@@ -453,20 +512,32 @@ class DetectImage(Node):
 
     def image_callback(self, msg):
         if msg is None:
-            self.get_logger().warn('no image acc')
+            self.get_logger().warn('No image received.')
             return 
-        data = msg.data
-        bridge = CvBridge()
-        image = bridge.imgmsg_to_cv2(msg, "bgr8")
-        self.image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) # 회색 이미지로 변환합니다.
+        
+        # 메시지를 NumPy 배열로 변환
+        np_arr = np.frombuffer(msg.data, np.uint8)  # 바이너리 데이터를 NumPy 배열로 변환
+        image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)  # OpenCV 형식으로 디코딩
+
+        if image is None:
+            self.get_logger().error('Failed to decode image.')
+            return
+
+        # 이미지 처리: 회색조로 변환
+        self.cam_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+        # 이미지 왜곡 보정 (예시로 호출)
         self.undistort_image = self.change_image()
+
+        # 특정 처리 수행 (예시로 호출)
         self.detect_and_pointing()
+
 
     def detect_and_pointing(self):
         '''
         1. 이미지를 받아 와서 type을 확인합니다. 
         '''
-        self.types,self.bounds = self.check()
+        self.types,self.points,self.bounds = self.check()
         pointer = Pointer(self.K, self.D, self.tf_map_camera) # pointer를 생성합니다.
         if self.types == EXT_IMG['type']:
             self.get_logger().info('Ext Image Detected')
@@ -477,7 +548,7 @@ class DetectImage(Node):
             return 
         
         self.get_logger().info(f'Bounds: {self.bounds}')
-        selector = Selector(self.bounds) # bounds를 이용하여 5개의 좌표를 얻습니다.
+        selector = Selector(self.points,self.bounds) # selector를 생성합니다.
         scales_point = selector()
         size = EXT_IMG['size'] if self.types == EXT_IMG['type'] else MAN_IMG['size'] if self.types==MAN_IMG['type'] else None
         if size is None:
@@ -488,15 +559,13 @@ class DetectImage(Node):
 
     
     def check(self):
-        '''
-        '''
-        result = SIFTDetector(self.ext_img,self.image) # 이미지를 비교합니다.
+        result = SIFTDetector(self.ext_img,self.cam_image,types=EXT_IMG['type'])
         if result.result:
-            return EXT_IMG['type'], result.bounds
-        result = SIFTDetector(self.man_img,self.image) # 이미지를 비교합니다.
+            return EXT_IMG['type'], result.points, result.bounds
+        result = SIFTDetector(self.man_img,self.cam_image,types=MAN_IMG['type'])
         if result.result:
-            return MAN_IMG['type'], result.bounds
-        return 0, 0 # 매칭된 이미지가 없을 경우 0을 반환합니다.
+            return MAN_IMG['type'], result.points, result.bounds
+        return 0, 0, 0 # 매칭된 이미지가 없을 경우 0을 반환합니다.
         
     def info_callback(self, msg):
         '''
@@ -540,9 +609,9 @@ class DetectImage(Node):
         step: 750
         data:  -- array 이미지 
         '''
-        if self.image is None or self.K is None or self.D is None:
+        if self.cam_image is None or self.K is None or self.D is None:
             return
-        undistorted_image = cv2.undistort(self.image, self.K, self.D)
+        undistorted_image = cv2.undistort(self.cam_image, self.K, self.D)
         return undistorted_image
 
 
@@ -581,7 +650,7 @@ class GUI:
     def initing(self):
         '''
         '''
-        empty_img = np.zeros((self.node.height, self.node.width), dtype=np.uint8)
+        empty_img = np.ones((500, 500), dtype=np.uint8)*255
         self.map_label.setPixmap(self.convert_to_pixmap(empty_img, self.image_size))
         self.camera_label.setPixmap(self.convert_to_pixmap(empty_img, self.image_size))
         self.detect_label.setText('Detected: None')
@@ -622,6 +691,12 @@ class GUI:
         self.coord_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.coord_label, 1, 1)  # (row 1, column 1)
 
+        # 저장 버튼
+        save_button = QPushButton('Save Map Image')
+        save_button.clicked.connect(self.map_saving)
+        self.main_layout.addWidget(save_button)
+
+
 
     def convert_to_pixmap(self, image, target_size=None):
         """
@@ -636,7 +711,7 @@ class GUI:
         """
         if image is None:
             # 빈 이미지를 반환
-            empty_image = np.zeros((500, 500), dtype=np.uint8)  # 기본 크기
+            empty_image = np.ones((500, 500), dtype=np.uint8)*255
             image = empty_image
 
         # Grayscale 이미지 처리
@@ -671,7 +746,7 @@ class GUI:
             self.coord_label.setText("Image point is None")
             point_pixel = None
         else:
-            point_pixel = self.point_piexling(self.node.point_img_map[0], self.node.point_img_map[1])
+            point_pixel = self.point_pixeling(self.node.point_img_map[0], self.node.point_img_map[1])
             string = f'If map origin is (0,0)Image Point: {self.node.point_img_map}\n'
             string += f'Pixel Point: {point_pixel}'
             self.coord_label.setText(string)
@@ -680,9 +755,9 @@ class GUI:
             self.man_img_point = point_pixel
         elif self.node.types == EXT_IMG['type']:
             self.ext_img_point = point_pixel
-        if self.node.map_img is not None and self.node.image is not None:
+        if self.node.map_img is not None and self.node.cam_image is not None:
             map_pixmap = self.convert_to_pixmap(self.node.map_img, self.image_size)
-            camera_pixmap = self.convert_to_pixmap(self.node.image, self.image_size)
+            camera_pixmap = self.convert_to_pixmap(self.node.cam_image, self.image_size)
             self.map_label.setPixmap(map_pixmap)
             self.camera_label.setPixmap(camera_pixmap)
 
@@ -690,10 +765,12 @@ class GUI:
             map_img = np.zeros((self.node.height, self.node.width), dtype=np.uint8) # 맵이 없을 경우 빈 이미지를 생성합니다.
             map_pixmap = self.convert_to_pixmap(map_img, self.image_size)          
             self.map_label.setPixmap(map_pixmap)
-        if self.node.image is None:
+        if self.node.cam_image is None:
             camera_img = np.zeros((self.node.height, self.node.width), dtype=np.uint8)
             camera_pixmap = self.convert_to_pixmap(camera_img, self.image_size)
             self.camera_label.setPixmap(camera_pixmap)
+        if self.node.bounds is not None and self.node.bounds != 0:
+            self.draw_box(self.node.cam_image, self.node.bounds)
         self.draw_points(self.node.map_img)
     
     def draw_points(self, map_image):
@@ -705,16 +782,38 @@ class GUI:
         '''
         blue = (255,0,0)
         red = (0,0,255)
+        green = (0,255,0)
+        pose = self.node.pose
         if map_image is None:
             return 
         image = map_image.copy() # 복사본을 만듭니다.
+        if pose is not None:
+            x_pixel, y_pixel = self.point_pixeling(pose[0], pose[1])
+            cv2.circle(image, (x_pixel, y_pixel), 2, green, -1) # 크기: 2
         if self.ext_img_point is not None:
-            cv2.circle(image, self.ext_img_point, 3, red, -1)
+            cv2.circle(image, self.ext_img_point, 2, red, -1) # 크기: 
         if self.man_img_point is not None:
-            cv2.circle(image, self.man_img_point, 3, blue, -1)
+            cv2.circle(image, self.man_img_point, 2, blue, -1)
         map_pixmap = self.convert_to_pixmap(image, self.image_size)
         self.map_label.setPixmap(map_pixmap)
-    def point_piexling(self, x, y):
+        self.pointed_image = image
+    
+    def map_saving(self):
+        cv2.imwrite('map_image.png', self.pointed_image)
+    
+    def draw_box(self,image, bounds):
+        '''
+        bounds를 이용하여 box를 그립니다. (x,y,w,h)
+        '''
+        center, size = bounds
+        x = int(center[0])
+        y = int(center[1])
+        w = int(size[0])
+        h = int(size[1])
+        cv2.rectangle(image, (x-w//2, y-h//2), (x+w//2, y+h//2), (0, 255, 0), 2)
+        self.camera_label.setPixmap(self.convert_to_pixmap(image, self.image_size))
+
+    def point_pixeling(self, x, y):
         '''
         좌표를 받아와서 변환 후 pixel 좌표로 출력합니다. 
         '''
@@ -759,26 +858,3 @@ def main():
         # 종료 시 ROS2와 스레드 정리
         ros_thread.stop()
         rclpy.shutdown()
-
-
-
-'''
-transforms:
-- header:
-    stamp:
-      sec: 1734086969
-      nanosec: 681052987
-    frame_id: map
-  child_frame_id: odom
-  transform:
-    translation:
-      x: 20.16926142645884
-      y: 11.039336521688346
-      z: -0.12570523118490198
-    rotation:
-      x: -0.008888777910641361
-      y: 0.01704839010350562
-      z: 0.9995527887709227
-      w: 0.0229033727299089
-
-'''

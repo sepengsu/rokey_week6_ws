@@ -87,16 +87,6 @@ class MapWithPose(Node):
                 goal_point = world_point
                 min_distance = self.distance(world_point)
 
-        # if not goal_point:
-        #     self.get_logger().warn('No safe goal found in initial search. Expanding search...')
-        #     # 두 번째 시도: 안전하지 않더라도 최소 거리인 목표 지점 선택
-        #     min_distance = float('inf')
-        #     for point in points:
-        #         world_point = self.map_to_world(point)
-        #         if self.distance(world_point) < min_distance and self.is_goal_safe(world_point[0], world_point[1], safety_radius=0.3):
-        #             goal_point = world_point
-        #             min_distance = self.distance(world_point)
-
         return goal_point
 
     
@@ -125,6 +115,7 @@ class MapWithPose(Node):
         img[img == -1] = 255  # -1을 255로 변환
         img = img.astype(np.uint8)  # uint8로 변환
         return img
+    
     def find_boundary(self,image, min_size=10):
         """맵의 경계선을 찾는 함수 (0과 255의 경계값만 검출)"""
         # 입력 이미지는 (0,100,255) 만 존재
