@@ -51,11 +51,13 @@ man_image= cv2.imread(os.path.join(dir_path, 'man_orig.png'), cv2.IMREAD_GRAYSCA
 EXT_IMG = {
     'image': ext_image,
     'size': (0.23,0.18), # meter
+    'image_size': ext_image.shape,
     'type': 1
 }
 MAN_IMG = {
     'image': man_image,
     'size': (0.18,0.18) ,# meter
+    'image_size': man_image.shape,
     'type': 2
 }
 
@@ -106,7 +108,10 @@ class SIFTDetector():
                 self.bounds = self.calculate_center_and_size(self.homography, self.ori_img)
                 # 캡처 이미지의 좌표로 self.points 저장
                 # 캡처 이미지의 좌표로 self.points 저장
-                self.points = [
+                self.origin_points = [  
+                    (self.kp1[match.queryIdx].pt[0], self.kp1[match.queryIdx].pt[1]) for match in self.good_matches
+                ]
+                self.real_points = [
                     (self.kp2[match.trainIdx].pt[0], self.kp2[match.trainIdx].pt[1]) for match in self.good_matches
                 ]
                 if len(self.bounds) < 2: # bounds가 없을 경우
@@ -206,23 +211,25 @@ class SIFTDetector():
 
 
 class Selector():
-    def __init__(self, points: list, bounds: tuple):
+    def __init__(self,origin_points,real_points: list, bounds: tuple):
         '''
         bounds: (center_x, center_y), (width, height)
         '''
-        self.points = points
+        self.origin_points = origin_points
+        self.real_points = real_points
         self.bounds = bounds
         self.select()
 
 
     def __call__(self):
-        return self.points
+        return self.origin_points_selected, self.real_points_selected
     def select(self):
         '''
         1.  임의로 30개 좌표를 선택합니다.
         '''
-        import random
-        self.points = random.sample(self.points, 30)
+        indexs = np.random.choice(len(self.origin_points), 30, replace=False)
+        self.real_points_selected = [self.real_points[i] for i in indexs]
+        self.origin_points_selected = [self.origin_points[i] for i in indexs]
 
 
 
@@ -232,15 +239,19 @@ class Pointer:
         self.D = dist_coeffs 
         self.tf_map_camera = tf_map_camera
 
-    def __call__(self, pixel_list: list, scale: tuple):
+    def __call__(self, pixel_list: list, matches_list: list,scale_real: tuple,scale_img: tuple):
         '''
-        input: pixel_list: [(x1,y1),(x2,y2),...] # pixel 좌표계
+        input: pixel_list: [(x1,y1),(x2,y2),...] # pixel 좌표계 ( 이미지 상에서의 좌표)
+
+        matches_list: [(x1,y1),(x2,y2),...] # pixel 좌표계 (원본 이미지 상의 좌표)
         scale: (width, height) # meter 단위 이미지의 실제 크기
 
         output: (x,y) # meter 단위 (map 상에서의 좌표)
         '''
         self.pixel_list = pixel_list
-        self.scale = scale
+        self.matches_list = matches_list
+        self.scale_real = scale_real
+        self.scale_img = scale_img
         self.pixel_to_scale()
         self.pnp_and_tf()
         self.final_tf()
@@ -249,25 +260,16 @@ class Pointer:
     def pixel_to_scale(self):
         '''
         1. 픽셀 좌표를 맵의 실제 크기(scale)를 기준으로 3D 좌표계로 변환합니다.
+        2. (0,0)을 중심으로 변환합니다. 좌측 상단
         2. 변환된 3D 좌표 리스트를 반환합니다.
         '''
         self.scale_list = []
-        image_width, image_height = self.scale  # 이미지의 실제 크기 (width, height in meters)
-
-        for pixel in self.pixel_list:
-            px, py = pixel  # 픽셀 좌표 (x, y)
-
-            # 중심 좌표 기준으로 픽셀 좌표를 정규화
-            normalized_x = (px - self.K[0, 2]) / self.K[0, 0]  # (x - cx) / fx
-            normalized_y = (py - self.K[1, 2]) / self.K[1, 1]  # (y - cy) / fy
-
-            # 이미지 크기를 기준으로 실제 맵 단위의 좌표 계산 (단위: m)
-            scaled_x = normalized_x * image_width
-            scaled_y = normalized_y * image_height
-
-            # z 좌표는 0으로 설정 (카메라의 평면 투영)
-            self.scale_list.append((scaled_x, scaled_y, 0))
-
+        for match in self.matches_list:
+            x,y = match
+            x = x/self.scale_img[0] * self.scale_real[0]
+            y = y/self.scale_img[1] * self.scale_real[1]
+            z = 0
+            self.scale_list.append([x,y,z])
 
     def pnp_and_tf(self):
         '''
@@ -537,7 +539,7 @@ class DetectImage(Node):
         '''
         1. 이미지를 받아 와서 type을 확인합니다. 
         '''
-        self.types,self.points,self.bounds = self.check()
+        self.types,self.origin_points,self.real_points, self.bounds = self.check()
         pointer = Pointer(self.K, self.D, self.tf_map_camera) # pointer를 생성합니다.
         if self.types == EXT_IMG['type']:
             self.get_logger().info('Ext Image Detected')
@@ -548,12 +550,15 @@ class DetectImage(Node):
             return 
         
         self.get_logger().info(f'Bounds: {self.bounds}')
-        selector = Selector(self.points,self.bounds) # selector를 생성합니다.
-        scales_point = selector()
+        selector = Selector(self.origin_points,self.real_points, self.bounds) # selector를 생성합니다.
+        origin_points, real_points = selector() # 선택된 좌표를 받아옵니다.
         size = EXT_IMG['size'] if self.types == EXT_IMG['type'] else MAN_IMG['size'] if self.types==MAN_IMG['type'] else None
         if size is None:
             return
-        result = pointer(scales_point, size) # pointer를 이용하여 map 상에서의 좌표를 얻습니다.
+        image_piexl_scale = EXT_IMG['image_size'] if self.types == EXT_IMG['type'] else MAN_IMG['image_size'] 
+
+        result = pointer(origin_points, real_points, size, image_piexl_scale)
+        # pointer를 호출합니다.
         self.point_img_map = result # map 상에서의 좌표를 저장합니다. (x,y) 좌표계로 저장됩니다.
         self.get_logger().info(f'Pointer: {result}')
 
@@ -561,11 +566,11 @@ class DetectImage(Node):
     def check(self):
         result = SIFTDetector(self.ext_img,self.cam_image,types=EXT_IMG['type'])
         if result.result:
-            return EXT_IMG['type'], result.points, result.bounds
+            return EXT_IMG['type'], result.origin_points,result.real_points, result.bounds
         result = SIFTDetector(self.man_img,self.cam_image,types=MAN_IMG['type'])
         if result.result:
-            return MAN_IMG['type'], result.points, result.bounds
-        return 0, 0, 0 # 매칭된 이미지가 없을 경우 0을 반환합니다.
+            return MAN_IMG['type'], result.origin_points,result.real_points, result.bounds
+        return 0, 0, 0 ,0 # 매칭된 이미지가 없을 경우 0을 반환합니다.
         
     def info_callback(self, msg):
         '''
