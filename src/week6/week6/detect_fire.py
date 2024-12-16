@@ -10,14 +10,22 @@ from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSDurabilityPolicy
 from ament_index_python.packages import get_package_share_directory
 from tf2_ros import Buffer, TransformListener
 from geometry_msgs.msg import TransformStamped
-from PyQt5.QtWidgets import QApplication, QMainWindow, QLabel, QVBoxLayout, QHBoxLayout, QWidget
+from PyQt5.QtWidgets import QApplication, QMainWindow, QLabel, QVBoxLayout, QHBoxLayout, QWidget, QGridLayout
 from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtCore import Qt
-
+from nav_msgs.msg import OccupancyGrid
 from PyQt5.QtCore import QThread, pyqtSignal
-import sys
+from rclpy.duration import Duration
+import sys, time
 
-import tf2_ros # tf2_ros는 tf2를 사용하기 위한 패키지입니다.
+MATRIX =   np.array([
+    [1.000, -0.003, 0.000, -0.060],
+    [0.003, 1.000, 0.000, -0.000],
+    [0.000, 0.000, 1.000, 0.244],
+    [0.000, 0.000, 0.000, 1.000]
+]) # camera to map tf matrix
+
+
 info_qos = QoSProfile(
     reliability=QoSReliabilityPolicy.RELIABLE,
     durability=QoSDurabilityPolicy.VOLATILE,
@@ -30,18 +38,26 @@ img_qos = QoSProfile(
     history=QoSHistoryPolicy.KEEP_LAST,    # 최신 메시지만 유지
     depth=10                                   # 최대 10개의 메시지 버퍼
 )
+
 dir_path = get_package_share_directory('week6')
-ext_img = os.path.join(dir_path, 'ext_orig.png')
-man_img= os.path.join(dir_path, 'man_orig.png')
-EXT = 1
-MAIN = 2
+ext_image = cv2.imread(os.path.join(dir_path, 'ext_orig.png'), cv2.IMREAD_GRAYSCALE)
+man_image= cv2.imread(os.path.join(dir_path, 'man_orig.png'), cv2.IMREAD_GRAYSCALE)
+EXT_IMG = {
+    'image': ext_image,
+    'size': (0.23,0.18), # meter
+    'type': 1
+}
+MAN_IMG = {
+    'image': man_image,
+    'size': (0.18,0.18) ,# meter
+    'type': 2
+}
 
 class SIFTDetector():
-    def __init__(self,ori_img,cap_img,types:int):
+    def __init__(self,ori_img,cap_img):
         self.ori_img = ori_img
         self.cap_img = cap_img
-        self.types = types
-        
+        self.result = False
         self.detect()
 
     def detect(self):
@@ -55,6 +71,7 @@ class SIFTDetector():
 
         if self.des1 is None or self.des2 is None:
             print("Insufficient features in one of the images.")
+            self.result = False
             return
 
         # 특징 매칭
@@ -62,17 +79,17 @@ class SIFTDetector():
 
         # 충분한 매칭점이 있는지 확인
         if len(self.good_matches) > 15:
-            # Homography 계산
+            # Homography 계산 for bounding box
             try:
                 self.homography, _ = self.compute_homography(self.good_matches)
                 self.bounds = self.calculate_center_and_size(self.homography, self.ori_img)
-                self.result = self.types
+                self.result = True  
             except Exception as e:
                 print(f"Error calculating homography: {e}")
-                self.result = 0
+                self.result = False
         else:
             print("Not enough good matches.")
-            self.result = 0
+            self.result = False
 
 
     def match_features(self,des1, des2,theshold=0.7):
@@ -136,6 +153,120 @@ class SIFTDetector():
 
         return (center_x, center_y), (width, height)
 
+
+class Selector():
+    def __init__(self,bonuds: tuple):
+        '''
+        bounds: (center_x, center_y), (width, height)
+        '''
+        self.bounds = bonuds 
+        self.select()
+        self.change()
+
+    def __call__(self):
+        return self.scale_points
+    def select(self):
+        '''
+        1. 중심 좌표, 왼쪽 상단 좌표, 오른쪽 상단 좌표, 왼쪽 하단 좌표, 오른쪽 하단 좌표를 얻는다.
+        2. 왼쪽 상단 좌표를 (0,0)으로 가정할 때의 5개의 좌표를 변환한다. 
+        '''
+        self.points = []
+        (center_x, center_y), (width, height) = self.bounds
+        self.points.append((center_x, center_y)) # 중심 좌표
+        self.points.append((center_x - width/2, center_y - height/2)) # 왼쪽 상단 좌표
+        self.points.append((center_x + width/2, center_y - height/2)) # 오른쪽 상단 좌표
+        self.points.append((center_x - width/2, center_y + height/2)) # 왼쪽 하단 좌표
+        self.points.append((center_x + width/2, center_y + height/2)) # 오른쪽 하단 좌표
+
+    def change(self):
+        '''
+        5개의 좌표를 변환합니다.
+        왼쪽 상단 좌표를 (0,0)으로 가정할 때의 5개의 좌표를 반환합니다.
+        '''
+        left_top = self.points[1]
+        self.scale_points = []
+        for point in self.points:
+            x = point[0] - left_top[0]
+            y = point[1] - left_top[1]
+            self.scale_points.append((x,y))
+
+class Pointer:
+    def __init__(self,camera_matrix: np.ndarray, dist_coeffs: np.ndarray,tf_map_camera: np.ndarray):
+        self.K = camera_matrix
+        self.D = dist_coeffs 
+        self.tf_map_camera = tf_map_camera
+
+    def __call__(self, piexl_list: list, scale: tuple):
+        '''
+        input: piexl_list: [(x1,y1),(x2,y2),...] # pixel 좌표계
+        scale: (width, height) # meter 단위 이미지의 실제 크기
+
+        output: (x,y) # meter 단위 (map 상에서의 좌표)
+        '''
+        self.piexl_list = piexl_list
+        self.scale = scale
+        self.pixel_to_scale()
+        self.pnp_and_tf()
+        self.final_tf()
+        return self.pointer()
+    
+    def pixel_to_scale(self):
+        '''
+        1. pixel을 meter로 변환합니다.
+        2. 변환된 meter를 반환합니다.
+        --> 이게 2d 데이터를 3d 데이터로 변환하는 것이다.
+        '''
+        self.scale_list = []
+        for piexl in self.piexl_list:
+            x, y = piexl
+            width, height = self.scale
+            x = (x - width/2) * width / width
+            y = (y - height/2) * height / height
+            self.scale_list.append((x,y,0))
+
+    def pnp_and_tf(self):
+        '''
+        1. 3D 포인트를 2D로 변환합니다.
+        2. 변환된 2D를 반환합니다.
+        :param object_points: 3D 월드 좌표 (Nx3 array)
+        :param camera_matrix: 카메라 매트릭스 (3x3 array)
+        :param dist_coeffs: 왜곡 계수 (1x5 or 1x4 array)
+        return rotation vector, translation vector
+        이 함수를 통하여 tf를 구한다. 
+        이 tf는 camera to image의 tf이다.
+        '''
+        object_points = np.array(self.scale_list)
+        image_points = np.array(self.piexl_list)
+        ret, rvec, tvec = cv2.solvePnP(object_points, image_points, self.K, self.D)
+        self.tf_camera_image =np.eye(4)
+        self.tf_camera_image[:3, :3] = cv2.Rodrigues(rvec)[0]
+        self.tf_camera_image[:3, 3] = tvec.flatten()
+    
+    def final_tf(self):
+        '''
+        여기서 얻은 tf는 map to image의 tf이다.
+        '''
+        self.tf = np.dot(self.tf_map_camera, self.tf_camera_image)
+
+    def pointer(self):
+        '''
+        변환 좌표계를 이용하여 이미지의 map상에서의 위치를 파악합니다.
+        tf: map to image
+        self.map_image_point: map 상에서의 좌표를 얻는다. --> (x,y,z) 좌표계로 변환된다.
+        avg_x: x 좌표의 평균값
+        avg_y: y 좌표의 평균값
+        이를 통하여 map 상에서의 위치를 파악한다.
+        '''
+        self.map_image_point = []
+        for point in self.scale_list:
+            point = np.array(point)
+            point = np.append(point, 1) # (x,y,z,1)로 변환합니다.
+            point = np.dot(self.tf, point)
+            self.map_image_point.append(point) # map 상에서의 좌표를 얻는다. --> (x,y,z) 좌표계로 변환된다.
+        avg_x = np.mean([point[0] for point in self.map_image_point])
+        avg_y = np.mean([point[1] for point in self.map_image_point])
+        return avg_x, avg_y
+    
 class ROSNodeThread(QThread):
     """
     ROS 노드를 별도의 QThread에서 실행.
@@ -171,32 +302,154 @@ class DetectImage(Node):
         self.get_logger().info('Detecting Node Started')
         self.info_sub = self.create_subscription(CameraInfo, '/oakd/rgb/preview/camera_info', self.info_callback, info_qos)
         self.image_sub = self.create_subscription(Image, '/oakd/rgb/preview/image_raw', self.image_callback, img_qos)
-
-        self.result = 0
+        self.map_sub = self.create_subscription(OccupancyGrid, '/map', self.map_callback, 10)
+        self.initing()
         self.image_load()
 
         self.tf_transform_get()
-    
+
+    def map_callback(self, msg):
+        """맵 데이터를 처리하고 목표 지점을 설정하는 콜백"""
+        if msg is None or len(msg.data) == 0:
+            self.get_logger().warn('Received empty map or no map data.')
+            return
+        # 맵 정보 처리
+        self.width = msg.info.width
+        self.height = msg.info.height
+        self.resolution = msg.info.resolution
+        self.origin = msg.info.origin
+        self.data = msg.data
+        self.map_img = self.data_to_image(self.data)  # 맵 데이터를 이미지로 변환
+
+    def data_to_image(self, data):
+        '''
+        data를 이미지로 변환합니다.
+        0은 255로 변환합니다.
+        -1은 0으로 변환합니다.
+        흑백 이미지를 컬러 이미지로 변환합니다.
+        '''
+        data = np.array(data).reshape((self.height, self.width))
+        data = np.where(data == 0, 255, data)  # -1은 미지의 값으로 255로 변환합니다.
+        data = np.where(data == -1,0, data) # -1은 미지의 값으로 0으로 변환합니다.
+        data = cv2.cvtColor(data.astype(np.uint8), cv2.COLOR_GRAY2BGR) # 흑백 이미지를 컬러 이미지로 변환합니다.
+        data = cv2.cvtColor(data, cv2.COLOR_BGR2RGB)  # OpenCV 이미지를 Qt 이미지로 변환합니다. 
+        return data
+
+    def initing(self):
+        self.types = 0
+
+        # image
+        self.image_height = None
+        self.image_width = None
+        self.image = None
+        self.undistort_image = None
+        
+        # tf
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+        self.tf_map_camera_msg = None
+        self.tf_map_camera = None # map to camera tf
+
+        # info
+        self.K = None
+        self.D = None
+
+        # map
+        self.width = 10
+        self.height = 10
+        self.origin = None
+        self.resolution = None
+        self.map_img = None
+
+        self.point_img_map = None
+
     def tf_transform_get(self):
-        self.tf_buffer = Buffer() # tf2_ros.Buffer()를 사용하여 tf2_ros.Buffer를 초기화합니다.
-        self.tf_listener = TransformListener(self.tf_buffer, self) # tf2_ros.TransformListener를 사용하여 tf2_ros.TransformListener를 초기화합니다.
-        self.get_logger().info('TF2 Ready')
-        from_frame = 'map'
-        to_frame = 'oakd_rgb_camera_frame'
-        # data = self.get_transform(from_frame, to_frame)
+
+        if self.tf_map_camera is not None:
+            self.get_logger().info('TF already obtained')
+            return
+        
+        # map to base_link
+        tf_map_odom = self.get_tf_dynamic('map', 'base_link') # map to base_link
+        if tf_map_odom is None:
+            tf_map_odom = self.get_tf_static('map', 'base_link') # map to base_link
+        if tf_map_odom is None:
+            self.get_logger().error('Failed to get map to odom transform.')
+            self.tf_map_camera = MATRIX # camera to map
+            return
+        
+        # odom to camera
+        tf_odom_base = self.get_tf_static('base_link', 'oakd_rgb_camera_frame') # odom to camera
+        if tf_odom_base is None:
+            self.get_logger().error('Failed to get odom to camera transform.')
+            return
+        
+        # map to camera
+        self.tf_map_camera = np.dot(self.get_tf_matrix(tf_map_odom), self.get_tf_matrix(tf_odom_base))
+        self.get_logger().info('TF obtained successfully')
         
     
+    def get_tf_matrix(self, transform):
+        """
+        Convert TransformStamped message to transformation matrix.
+        """
+        self.tf_map_camera = np.eye(4)
+        T = transform.transform.translation
+        R = transform.transform.rotation
+        self.tf_map_camera[:3, 3] = [T.x, T.y, T.z]
+        self.tf_map_camera[:3, :3] = self.quaternion_to_matrix(R.x, R.y, R.z, R.w)
+        self.get_logger().info(f"Transformation Matrix:\n{self.tf_map_camera}")
+
+    def quaternion_to_matrix(self, x, y, z, w):
+        """
+        Convert quaternion to rotation matrix.
+        """
+        return np.array([
+            [1 - 2 * y ** 2 - 2 * z ** 2, 2 * x * y - 2 * z * w, 2 * x * z + 2 * y * w],
+            [2 * x * y + 2 * z * w, 1 - 2 * x ** 2 - 2 * z ** 2, 2 * y * z - 2 * x * w],
+            [2 * x * z - 2 * y * w, 2 * y * z + 2 * x * w, 1 - 2 * x ** 2 - 2 * y ** 2]
+        ])
+
+    def get_tf_static(self, from_frame, to_frame):
+        """
+        Fetch static transform from 'from_frame' to 'to_frame'.
+        """
+        try:
+            self.get_logger().info(f'Waiting for static transform from {from_frame} to {to_frame}')
+            transform = self.tf_buffer.lookup_transform(
+                from_frame,
+                to_frame,
+                rclpy.time.Time(seconds=0),  # Use static transform time
+                timeout=Duration(seconds=3.0)
+            )
+            return transform
+        except Exception as e:  
+            self.get_logger().error(f'Failed to get static transform: {str(e)}')
+            return None
+        
+    def get_tf_dynamic(self, from_frame, to_frame):
+        """
+        Fetch dynamic transform from 'from_frame' to 'to_frame'.
+        """
+        try:
+            self.get_logger().info(f'Waiting for dynamic transform from {from_frame} to {to_frame}')
+            transform = self.tf_buffer.lookup_transform(
+                from_frame,
+                to_frame,
+                rclpy.time.Time(),  # Use current time
+                timeout=Duration(seconds=5.0)
+            )
+            return transform
+        except Exception as e:
+            self.get_logger().error(f'Failed to get dynamic transform: {str(e)}')
+            return None
+
+
+
     def image_load(self):
         # 이미지 
-        self.man_img = cv2.imread(man_img, cv2.IMREAD_GRAYSCALE) # 회색 이미지로 읽어옵니다.
-        if self.man_img is None:
-            self.get_logger().warn('No Main Image')
-            raise ValueError('No Main Image')
-        self.ext_img = cv2.imread(ext_img, cv2.IMREAD_GRAYSCALE) # 회색 이미지로 읽어옵니다.
-        if self.ext_img is None:
-            self.get_logger().warn('No Ext Image')
-            raise ValueError('No Ext Image')
-        
+        self.man_img = MAN_IMG['image']
+        self.ext_img = EXT_IMG['image']
 
     def image_callback(self, msg):
         if msg is None:
@@ -206,34 +459,45 @@ class DetectImage(Node):
         bridge = CvBridge()
         image = bridge.imgmsg_to_cv2(msg, "bgr8")
         self.image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) # 회색 이미지로 변환합니다.
-        self.change_image()
-        self.detect()
+        self.undistort_image = self.change_image()
+        self.detect_and_pointing()
 
-    def detect(self):
+    def detect_and_pointing(self):
         '''
-        1. 이미지를 받아옵니다.
-        2. 이미지를 처리합니다.
-        3. 이미지를 출력합니다.
+        1. 이미지를 받아 와서 type을 확인합니다. 
         '''
-        self.result = self.check()
-        if self.result == EXT:
+        self.types,self.bounds = self.check()
+        pointer = Pointer(self.K, self.D, self.tf_map_camera) # pointer를 생성합니다.
+        if self.types == EXT_IMG['type']:
             self.get_logger().info('Ext Image Detected')
-        elif self.result == MAIN:
+        elif self.types == MAN_IMG['type']:
             self.get_logger().info('Man Image Detected')
-        else:
+        elif self.types == 0:
             self.get_logger().info('No Image Detected')
+            return 
+        
+        self.get_logger().info(f'Bounds: {self.bounds}')
+        selector = Selector(self.bounds) # bounds를 이용하여 5개의 좌표를 얻습니다.
+        scales_point = selector()
+        size = EXT_IMG['size'] if self.types == EXT_IMG['type'] else MAN_IMG['size'] if self.types==MAN_IMG['type'] else None
+        if size is None:
+            return
+        result = pointer(scales_point, size) # pointer를 이용하여 map 상에서의 좌표를 얻습니다.
+        self.point_img_map = result # map 상에서의 좌표를 저장합니다. (x,y) 좌표계로 저장됩니다.
+        self.get_logger().info(f'Pointer: {result}')
+
     
     def check(self):
         '''
         '''
-        result = SIFTDetector(self.ext_img,self.image,EXT)
-        if result.result == EXT:
-            # ext1과 img가 일치하는 경우
-
-            return EXT
-    def pixel_to_scale(self,pixel,scale):
-        pass
-
+        result = SIFTDetector(self.ext_img,self.image) # 이미지를 비교합니다.
+        if result.result:
+            return EXT_IMG['type'], result.bounds
+        result = SIFTDetector(self.man_img,self.image) # 이미지를 비교합니다.
+        if result.result:
+            return MAN_IMG['type'], result.bounds
+        return 0, 0 # 매칭된 이미지가 없을 경우 0을 반환합니다.
+        
     def info_callback(self, msg):
         '''
         header:
@@ -244,70 +508,18 @@ class DetectImage(Node):
         height: 250
         width: 250
         distortion_model: rational_polynomial
-        d: 
-        - -3.4751670360565186
-        - -38.5734748840332
-        - 0.00034309603506699204
-        - -9.377215610584244e-05
-        - 286.4400939941406
-        - -3.6408045291900635
-        - -36.68898010253906
-        - 279.0523681640625
-        k:
-        - 202.61964416503906
-        - 0.0
-        - 124.34600067138672
-        - 0.0
-        - 202.61964416503906
-        - 127.28642272949219
-        - 0.0
-        - 0.0
-        - 1.0
-        r:
-        - 1.0
-        - 0.0
-        - 0.0
-        - 0.0
-        - 1.0
-        - 0.0
-        - 0.0
-        - 0.0
-        - 1.0
-        p:
-        - 202.61964416503906
-        - 0.0
-        - 124.34600067138672
-        - 0.0
-        - 0.0
-        - 202.61964416503906
-        - 127.28642272949219
-        - 0.0
-        - 0.0
-        - 0.0
-        - 1.0
-        - 0.0
-        binning_x: 0
-        binning_y: 0
-        roi:
-            x_offset: 0
-            y_offset: 0
-            height: 0
-            width: 0
-            do_rectify: false
-
+        d: (8)
+        k: (9)
         '''
         if msg is None:
             self.get_logger().info('No Camera Info')
             return
-        self.width = msg.width
-        self.height = msg.height
-        self.k = msg.k
-        self.d = msg.d
-        self.r = msg.r
-        self.p = msg.p
-        self.binning_x = msg.binning_x
-        self.binning_y = msg.binning_y
-        self.roi = msg.roi
+        
+        self.K  = np.array(msg.k).reshape((3,3))
+        self.D = np.array(msg.d[:5]).reshape((1,5))
+        self.image_height = msg.height
+        self.image_width = msg.width
+        self.get_logger().info('Camera Info Received')
 
     def change_image(self):
         '''
@@ -328,11 +540,10 @@ class DetectImage(Node):
         step: 750
         data:  -- array 이미지 
         '''
-        K = np.array(self.k).reshape((3,3))
-        D = self.d[:5]
-        D = np.array(D).reshape((1,5))  # 1x5
-        undistorted_image = cv2.undistort(self.image, K, D)
-        self.image = undistorted_image
+        if self.image is None or self.K is None or self.D is None:
+            return
+        undistorted_image = cv2.undistort(self.image, self.K, self.D)
+        return undistorted_image
 
 
 
@@ -349,6 +560,7 @@ class GUI:
         self.window = QMainWindow()
         self.window.setWindowTitle('Image Viewer')
         self.window.setGeometry(100, 100, 1200, 800)
+        self.image_size = (500, 500)
 
         # 메인 위젯과 레이아웃 설정
         self.central_widget = QWidget()
@@ -357,96 +569,162 @@ class GUI:
         self.window.setCentralWidget(self.central_widget)
 
         # 4개의 창 생성
-        self.create_image_views()
+        self.create_views()
+
+        # 초기화
+        self.initing()
 
         # 원본 이미지 설정
         self.origin_image1 = self.node.man_img
         self.origin_image2 = self.node.ext_img
+    
+    def initing(self):
+        '''
+        '''
+        empty_img = np.zeros((self.node.height, self.node.width), dtype=np.uint8)
+        self.map_label.setPixmap(self.convert_to_pixmap(empty_img, self.image_size))
+        self.camera_label.setPixmap(self.convert_to_pixmap(empty_img, self.image_size))
+        self.detect_label.setText('Detected: None')
+        self.coord_label.setText('Image point is None')
+        
+        self.point_pixel = None
+        self.ext_img_point = None
+        self.man_img_point = None  
 
-    def create_image_views(self):
+    def create_views(self):
         """
         4개의 이미지를 표시할 창을 생성.
         """
-        for i in range(4):
-            layout = QHBoxLayout()
+        # 2x2 레이아웃 설정
+        layout = QGridLayout()
+        self.main_layout.addLayout(layout)
+        image_size = self.image_size
 
-            # 왼쪽: 원본 이미지
-            original_label = QLabel()
-            original_label.setAlignment(Qt.AlignCenter)
-            layout.addWidget(original_label)
+        # 왼쪽 위: 맵 이미지
+        self.map_label = QLabel()
+        self.map_label.setAlignment(Qt.AlignCenter)
+        self.map_label.setFixedSize(image_size[0], image_size[1])  # 크기 고정
+        layout.addWidget(self.map_label, 0, 0)  # (row 0, column 0)
 
-            # 오른쪽: 탐지된 이미지
-            detected_label = QLabel()
-            detected_label.setAlignment(Qt.AlignCenter)
-            detected_label.setText(f"Detected Image {i + 1}")
-            layout.addWidget(detected_label)
+        # 왼쪽 아래: 카메라 이미지
+        self.camera_label = QLabel()
+        self.camera_label.setAlignment(Qt.AlignCenter)
+        self.camera_label.setFixedSize(image_size[0], image_size[1])
+        layout.addWidget(self.camera_label, 1, 0)  # (row 1, column 0)
 
-            # 레이아웃 추가
-            self.main_layout.addLayout(layout)
+        # 오른쪽 위: 탐지 여부
+        self.detect_label = QLabel()
+        self.detect_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.detect_label, 0, 1)  # (row 0, column 1)
 
-    def update_images(self, detected_images):
-        """
-        원본 이미지와 탐지 이미지를 업데이트.
+        # 오른쪽 아래: 좌표
+        self.coord_label = QLabel()
+        self.coord_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.coord_label, 1, 1)  # (row 1, column 1)
 
-        Args:
-            detected_images (list): 탐지된 이미지 리스트 (numpy.ndarray 형식).
-        """
-        original_images = [self.origin_image1, self.origin_image2]
 
-        for i, (original_img, detected_img) in enumerate(zip(original_images, detected_images)):
-            if i >= self.main_layout.count():
-                break
-
-            layout = self.main_layout.itemAt(i)
-            if layout is None:
-                continue
-
-            original_label = layout.itemAt(0).widget()
-            detected_label = layout.itemAt(1).widget()
-
-            # 원본 이미지 업데이트
-            if original_img is not None:
-                original_pixmap = self.convert_to_pixmap(original_img)
-                original_label.setPixmap(original_pixmap)
-
-            # 탐지 이미지 업데이트
-            if detected_img is not None:
-                detected_pixmap = self.convert_to_pixmap(detected_img)
-                detected_label.setPixmap(detected_pixmap)
-
-    def convert_to_pixmap(self, image):
+    def convert_to_pixmap(self, image, target_size=None):
         """
         numpy 이미지를 QPixmap으로 변환.
 
         Args:
             image (numpy.ndarray): OpenCV 이미지.
+            target_size (tuple, optional): (width, height)로 리사이즈할 크기. 기본값은 None.
 
         Returns:
             QPixmap: QPixmap 객체.
         """
-        if image.ndim == 2:  # Grayscale 이미지 처리
+        if image is None:
+            # 빈 이미지를 반환
+            empty_image = np.zeros((500, 500), dtype=np.uint8)  # 기본 크기
+            image = empty_image
+
+        # Grayscale 이미지 처리
+        if image.ndim == 2:
             h, w = image.shape
             qt_image = QImage(image.data, w, h, w, QImage.Format_Grayscale8)
-        else:  # RGB 이미지 처리
+        # RGB 이미지 처리
+        elif image.ndim == 3:
             h, w, ch = image.shape
             bytes_per_line = ch * w
             qt_image = QImage(image.data, w, h, bytes_per_line, QImage.Format_RGB888).rgbSwapped()
-        return QPixmap.fromImage(qt_image)
+        else:
+            raise ValueError("Unsupported image format")
 
-    def update_detect(self):
+        # QImage → QPixmap 변환
+        pixmap = QPixmap.fromImage(qt_image)
+
+        # target_size로 크기 변경
+        if target_size:
+            pixmap = pixmap.scaled(target_size[0], target_size[1], Qt.KeepAspectRatio)
+
+        return pixmap
+
+    def update_gui(self):
         """
         탐지 결과를 업데이트.
         """
-        if self.node.image is None:
-            return
-        black_image = np.zeros_like(self.node.image)
-        if self.node.result == EXT:
-            detected_images = [self.node.image, black_image]
-        elif self.node.result == MAIN:
-            detected_images = [black_image, self.node.image]
+        result = "Man" if self.node.types == MAN_IMG['type'] else "Ext" if self.node.types == EXT_IMG['type'] else "None"
+        self.detect_label.setText(f'Detected: {result}')
+
+        if self.node.point_img_map is None:
+            self.coord_label.setText("Image point is None")
+            point_pixel = None
         else:
-            detected_images = [black_image, black_image]
-        self.update_images(detected_images)
+            point_pixel = self.point_piexling(self.node.point_img_map[0], self.node.point_img_map[1])
+            string = f'If map origin is (0,0)Image Point: {self.node.point_img_map}\n'
+            string += f'Pixel Point: {point_pixel}'
+            self.coord_label.setText(string)
+        
+        if self.node.types == MAN_IMG['type']:
+            self.man_img_point = point_pixel
+        elif self.node.types == EXT_IMG['type']:
+            self.ext_img_point = point_pixel
+        if self.node.map_img is not None and self.node.image is not None:
+            map_pixmap = self.convert_to_pixmap(self.node.map_img, self.image_size)
+            camera_pixmap = self.convert_to_pixmap(self.node.image, self.image_size)
+            self.map_label.setPixmap(map_pixmap)
+            self.camera_label.setPixmap(camera_pixmap)
+
+        if self.node.map_img is None:
+            map_img = np.zeros((self.node.height, self.node.width), dtype=np.uint8) # 맵이 없을 경우 빈 이미지를 생성합니다.
+            map_pixmap = self.convert_to_pixmap(map_img, self.image_size)          
+            self.map_label.setPixmap(map_pixmap)
+        if self.node.image is None:
+            camera_img = np.zeros((self.node.height, self.node.width), dtype=np.uint8)
+            camera_pixmap = self.convert_to_pixmap(camera_img, self.image_size)
+            self.camera_label.setPixmap(camera_pixmap)
+        self.draw_points(self.node.map_img)
+    
+    def draw_points(self, map_image):
+        '''
+        map_pixmap에 점을 그립니다.
+        색은 빨간색과 파란색으로 나뉩니다.
+        man: 파란색, ext: 빨간색
+
+        '''
+        blue = (255,0,0)
+        red = (0,0,255)
+        if map_image is None:
+            return 
+        image = map_image.copy() # 복사본을 만듭니다.
+        if self.ext_img_point is not None:
+            cv2.circle(image, self.ext_img_point, 3, red, -1)
+        if self.man_img_point is not None:
+            cv2.circle(image, self.man_img_point, 3, blue, -1)
+        map_pixmap = self.convert_to_pixmap(image, self.image_size)
+        self.map_label.setPixmap(map_pixmap)
+    def point_piexling(self, x, y):
+        '''
+        좌표를 받아와서 변환 후 pixel 좌표로 출력합니다. 
+        '''
+        if self.node.map_img is None or self.node.undistort_image is None:
+            return
+        if self.node.width is None or self.node.height is None or self.node.origin is None and self.node.resolution is None:
+            return
+        x_pixel = int((x - self.node.origin.position.x) / self.node.resolution)
+        y_pixel = int((y - self.node.origin.position.y) / self.node.resolution)
+        return x_pixel, y_pixel
 
     def show(self):
         """
@@ -469,7 +747,7 @@ def main():
 
     # ROSNodeThread를 사용하여 ROS2 노드 실행
     ros_thread = ROSNodeThread(node)
-    ros_thread.update_signal.connect(gui.update_detect)  # 탐지 결과를 GUI에 전달
+    ros_thread.update_signal.connect(gui.update_gui)
     ros_thread.start()
 
     # PyQt5 GUI 실행
@@ -485,7 +763,6 @@ def main():
 
 
 '''
-
 transforms:
 - header:
     stamp:
