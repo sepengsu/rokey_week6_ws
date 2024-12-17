@@ -4,6 +4,15 @@ from nav_msgs.msg import OccupancyGrid
 from geometry_msgs.msg import Pose, PoseStamped, PoseWithCovarianceStamped
 import numpy as np
 import cv2
+
+def deg_range(angle):
+    # 각도를 -180도 ~ 180도 범위로 변환
+    while angle > 180:
+        angle -= 360
+    while angle < -180:
+        angle += 360
+    return angle
+
 class MapWithPose(Node):
     def __init__(self):
         super().__init__('mapping')
@@ -17,6 +26,9 @@ class MapWithPose(Node):
         self.goal_start = False
         self.map = None
         self.count = 0
+
+        # thrsholding goal
+        self.hist_point = None # 최신 goal 
 
     def pose_callback(self, msg):
         """로봇의 초기 위치를 받아오는 콜백"""
@@ -59,7 +71,7 @@ class MapWithPose(Node):
             return  # 경계선이 없으면 작업을 하지 않음    
 
         goal_point = self.find_goal(points)
-        if goal_point:
+        if goal_point is not None:
             self.pub_goal(goal_point)
         else:
             self.get_logger().warn('No valid goal point detected.')
@@ -79,17 +91,57 @@ class MapWithPose(Node):
         """경계선 점 중에서 안전한 목표 지점을 찾는 함수"""
         goal_point = None
         min_distance = float('inf')
-
+        is_all_rounding = True
+        heading = np.arctan2(self.pose.orientation.z, self.pose.orientation.w) * 2 # 현재 로봇의 방향
         # 첫 번째 시도: 안전한 목표 지점 찾기
         for point in points:
             world_point = self.map_to_world(point)
-            if self.distance(world_point) < min_distance and self.is_goal_safe(world_point[0], world_point[1]):
+            target_heading = np.arctan2(world_point[1] - self.pose.position.y, world_point[0] - self.pose.position.x) # 목표 방향
+            heading_diff = np.abs(target_heading - heading) # 방향 차이 +가 
+            is_goal_safe = self.is_goal_safe(world_point[0], world_point[1])
+            distance = self.distance(world_point)
+            is_rounding = self.is_rounding(world_point)
+            if is_goal_safe and heading_diff > 0 and distance < min_distance and not is_rounding:
+                '''
+                1. 목표 지점이 안전한지 확인
+                2. 목표 방향과 로봇의 방향이 45도 이내인지 확인
+                3. 최소 거리인지 확인
+                '''
                 goal_point = world_point
-                min_distance = self.distance(world_point)
+                min_distance = distance
+                is_all_rounding = False
 
+        if goal_point is None:
+            # heading은 무시하고 가장 가까운 지점을 찾음
+            for point in points:
+                world_point = self.map_to_world(point)
+                target_heading = np.arctan2(world_point[1] - self.pose.position.y, world_point[0] - self.pose.position.x) # 목표 방향
+                heading_diff = np.abs(target_heading - heading) # 방향 차이 +가 
+                is_goal_safe = self.is_goal_safe(world_point[0], world_point[1])
+                distance = self.distance(world_point)
+                is_rounding = self.is_rounding(world_point)
+                if is_goal_safe and distance < min_distance and not is_rounding: # heading은 무시
+                    goal_point = world_point
+                    min_distance = distance
+                    is_all_rounding = False
+        
+        if is_all_rounding:
+            return None
         return goal_point
-
     
+
+    def is_rounding(self,goal_point):
+        if not self.hist_point: 
+            self.hist_point = goal_point
+            return False
+        thre = 0.2 # (m)
+        if np.sqrt((goal_point[0]-self.hist_point[0])**2 + (goal_point[1]-self.hist_point[1])**2) < thre:
+            return True
+        else:
+            self.hist_point = goal_point
+            return False
+        
+        
     def map_to_world(self, point):
         """맵 픽셀 좌표를 월드 좌표로 변환하는 함수"""
         x_pixel, y_pixel = point

@@ -8,11 +8,6 @@
   <license>TODO: License declaration</license>
 
 
-  <depend>turtlebot4_description</depend>
-  <depend>turtlebot4_desktop</depend>
-  <depend>turtlebot4_navigation</depend>
-  <depend>turtlebot4_viz</depend>
-
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
   <test_depend>ament_pep257</test_depend>

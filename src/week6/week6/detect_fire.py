@@ -8,7 +8,6 @@ from rclpy.qos import QoSProfile
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, QoSHistoryPolicy
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSDurabilityPolicy
 from ament_index_python.packages import get_package_share_directory
-from tf2_ros import Buffer, TransformListener
 from geometry_msgs.msg import TransformStamped
 from PyQt5.QtWidgets import QApplication, QMainWindow, QLabel, QVBoxLayout, QHBoxLayout, QWidget, QGridLayout
 from PyQt5.QtWidgets import QPushButton
@@ -17,20 +16,29 @@ from PyQt5.QtCore import Qt
 from nav_msgs.msg import OccupancyGrid
 from PyQt5.QtCore import QThread, pyqtSignal
 from rclpy.duration import Duration
+from geometry_msgs.msg import Pose, PoseStamped, PoseWithCovarianceStamped
+from tf2_msgs.msg import TFMessage  
 import sys, time
+from nav_msgs.msg import Odometry
+from rclpy.qos import QoSProfile, QoSHistoryPolicy, QoSDurabilityPolicy, QoSReliabilityPolicy
 
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
+from rclpy.duration import Duration  # Duration을 가져옵니다.
+import numpy as np
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
 
-MATRIX =   np.array([
-    [1.000, -0.003, 0.000, -0.060],
-    [0.003, 1.000, 0.000, -0.000],
+odom_profile = QoSProfile(
+    reliability=ReliabilityPolicy.BEST_EFFORT,  # 퍼블리셔의 RELIABILITY와 동일하게 설정
+    history=HistoryPolicy.KEEP_LAST,
+    depth=10,
+    durability=DurabilityPolicy.VOLATILE,
+)
+
+BASELINK_TO_CAMERA = np.array([ 
+    [0.000, 1.000, 0.000, 0.000],
+    [-1.000, 0.000, 0.000, 0.000],
     [0.000, 0.000, 1.000, 0.244],
-    [0.000, 0.000, 0.000, 1.000]
-]) # camera to map tf matrix
-
-# MATRIX = np.array([0.770,-0.638,0.000,0.000
-#                 ,-0.638,-0.770,0.000,0.000
-#                 ,0.000,0.000,1.000,0.244
-#                 ,0.000,0.000,0.000,1.000]).reshape((4,4))  
+    [0.000, 0.000, 0.000, 1.000]])
 
 info_qos = QoSProfile(
     reliability=QoSReliabilityPolicy.RELIABLE,
@@ -275,25 +283,24 @@ class Pointer:
         '''
         1. 3D 포인트를 2D로 변환합니다.
         2. 변환된 2D를 반환합니다.
-        :param object_points: 3D 월드 좌표 (Nx3 array)
-        :param camera_matrix: 카메라 매트릭스 (3x3 array)
-        :param dist_coeffs: 왜곡 계수 (1x5 or 1x4 array)
-        return rotation vector, translation vector
         이 함수를 통하여 tf를 구한다. 
         이 tf는 camera to image의 tf이다.
         '''
         object_points = np.array(self.scale_list) # 3d 데이터, meter 좌표계
         image_points = np.array(self.pixel_list) # 2d 데이터, pixel 좌표계
 
+        # 이미 undistort된 상태이므로, undistortImage를 사용하지 않습니다.
+        # 그러므로 K, D는 (3x3)의 단위 행렬입니다.
+        self.K = np.eye(3) 
+        self.D = np.zeros(5) # zero distortion coefficients
         ret, rvec, tvec, inliers = cv2.solvePnPRansac(
             object_points, image_points, self.K, self.D
         )
-
         self.tf_camera_image =np.eye(4)
         self.tf_camera_image[:3, :3] = cv2.Rodrigues(rvec)[0]
         self.tf_camera_image[:3, 3] = tvec.flatten()
     
-    def final_tf(self):
+    def final_Stf(self):
         '''
         여기서 얻은 tf는 map to image의 tf이다.
         '''
@@ -302,16 +309,11 @@ class Pointer:
     def pointer(self):
         '''
         변환 좌표계를 이용하여 이미지의 map상에서의 위치를 파악합니다.
-        tf: map to image
-        self.map_image_point: map 상에서의 좌표를 얻는다. --> (x,y,z) 좌표계로 변환된다.
-        avg_x: x 좌표의 평균값
-        avg_y: y 좌표의 평균값
-        이를 통하여 map 상에서의 위치를 파악한다.
         '''
         self.map_image_point = []
-        for point in self.scale_list:
-            point = np.array(point)
-            point = np.append(point, 1) # (x,y,z,1)로 변환합니다.
+        for point in self.pixel_list:
+            x,y = point
+            point = np.array([x,y,0,1])
             point = np.dot(self.tf, point)
             self.map_image_point.append(point) # map 상에서의 좌표를 얻는다. --> (x,y,z) 좌표계로 변환된다.
         avg_x = np.mean([point[0] for point in self.map_image_point])
@@ -354,16 +356,52 @@ class DetectImage(Node):
         self.info_sub = self.create_subscription(CameraInfo, '/oakd/rgb/preview/camera_info', self.info_callback, info_qos)
         self.image_sub = self.create_subscription(CompressedImage, '/oakd/rgb/preview/image_raw/compressed', self.image_callback, img_qos)
         self.map_sub = self.create_subscription(OccupancyGrid, '/map', self.map_callback, 10)
-        self.pose_sub = self.create_subscription(TransformStamped, '/pose', self.pose_callback, 10)
+        self.tf_map_odom_sub = self.create_subscription(TFMessage, '/tf', self.tf_map_odom_callback, 10)
+        self.odom_baselink_sub = self.create_subscription(Odometry, '/odom', self.tf_odom_base_link_callback, odom_profile)
+        self.odom_to_base_link = None
         self.initing()
         self.image_load()
-
-        self.tf_transform_get()
-
-    def pose_callback(self, msg):
+    
+    def tf_map_odom_callback(self, msg):
         '''
         '''
-        self.pose = [msg.position.x, msg.position.y]
+        map_to_odom = None 
+        for transform in msg.transforms:
+            translation = transform.transform.translation
+            rotation = transform.transform.rotation
+            map_to_odom= np.array([
+                [rotation.x, rotation.y, rotation.z, translation.x],
+                [rotation.y, rotation.x, rotation.z, translation.y],
+                [rotation.z, rotation.z, rotation.x, translation.z],
+                [0, 0, 0, 1]
+            ])
+        if map_to_odom is None:
+            self.get_logger().warn('Failed to get map to odom transform.')
+            return
+        self.tf_map_odom = map_to_odom
+
+    def tf_odom_base_link_callback(self, msg):
+        '''
+        '''
+        translation = msg.pose.pose.position
+        rotation = msg.pose.pose.orientation
+        self.odom_to_base_link = np.array([
+            [rotation.x, rotation.y, rotation.z, translation.x],
+            [rotation.y, rotation.x, rotation.z, translation.y],
+            [rotation.z, rotation.z, rotation.x, translation.z],
+            [0, 0, 0, 1]
+        ])
+        if self.odom_to_base_link is None:
+            self.get_logger().warn('Failed to get odom to base_link transform.')
+            return
+        if self.tf_map_odom is None or self.odom_to_base_link is None:
+            self.get_logger().warn('Failed to get map to odom transform.')
+            return
+        if self.tf_map_base_link is not None and self.tf_map_odom is not None:
+            self.tf_map_base_link = np.dot(self.tf_map_odom, self.odom_to_base_link)
+            self.tf_map_camera = np.dot(self.tf_map_base_link, BASELINK_TO_CAMERA) # map to camera tf
+            self.get_logger().info('TF obtained successfully')
+    
 
     def map_callback(self, msg):
         """맵 데이터를 처리하고 목표 지점을 설정하는 콜백"""
@@ -403,12 +441,8 @@ class DetectImage(Node):
 
         self.bounds = None
         
-        # tf
-        self.tf_buffer = Buffer()
-        self.tf_listener = TransformListener(self.tf_buffer, self)
         self.tf_map_camera_msg = None
         self.tf_map_camera = None # map to camera tf
-
         # info
         self.K = None
         self.D = None
@@ -416,8 +450,6 @@ class DetectImage(Node):
         # map
         self.width = 10
         self.height = 10
-        self.origin = None
-        self.resolution = None
         self.map_img = None
 
         self.point_img_map = None
@@ -425,87 +457,9 @@ class DetectImage(Node):
         # pose
         self.pose = None
 
-    def tf_transform_get(self):
-
-        if self.tf_map_camera is not None:
-            self.get_logger().info('TF already obtained')
-            return
-        
-        # map to base_link
-        tf_map_odom = self.get_tf_dynamic('map', 'base_link') # map to base_link
-        if tf_map_odom is None:
-            tf_map_odom = self.get_tf_static('map', 'base_link') # map to base_link
-        if tf_map_odom is None:
-            self.get_logger().error('Failed to get map to odom transform.')
-            self.tf_map_camera = MATRIX # camera to map
-            return
-        
-        # odom to camera
-        tf_odom_base = self.get_tf_static('base_link', 'oakd_rgb_camera_frame') # odom to camera
-        if tf_odom_base is None:
-            self.get_logger().error('Failed to get odom to camera transform.')
-            return
-        
-        # map to camera
-        self.tf_map_camera = np.dot(self.get_tf_matrix(tf_map_odom), self.get_tf_matrix(tf_odom_base))
-        self.get_logger().info('TF obtained successfully')
-        
-    
-    def get_tf_matrix(self, transform):
-        """
-        Convert TransformStamped message to transformation matrix.
-        """
-        self.tf_map_camera = np.eye(4)
-        T = transform.transform.translation
-        R = transform.transform.rotation
-        self.tf_map_camera[:3, 3] = [T.x, T.y, T.z]
-        self.tf_map_camera[:3, :3] = self.quaternion_to_matrix(R.x, R.y, R.z, R.w)
-        self.get_logger().info(f"Transformation Matrix:\n{self.tf_map_camera}")
-
-    def quaternion_to_matrix(self, x, y, z, w):
-        """
-        Convert quaternion to rotation matrix.
-        """
-        return np.array([
-            [1 - 2 * y ** 2 - 2 * z ** 2, 2 * x * y - 2 * z * w, 2 * x * z + 2 * y * w],
-            [2 * x * y + 2 * z * w, 1 - 2 * x ** 2 - 2 * z ** 2, 2 * y * z - 2 * x * w],
-            [2 * x * z - 2 * y * w, 2 * y * z + 2 * x * w, 1 - 2 * x ** 2 - 2 * y ** 2]
-        ])
-
-    def get_tf_static(self, from_frame, to_frame):
-        """        '''
-        '''
-        Fetch static transform from 'from_frame' to 'to_frame'.
-        """
-        try:
-            self.get_logger().info(f'Waiting for static transform from {from_frame} to {to_frame}')
-            transform = self.tf_buffer.lookup_transform(
-                from_frame,
-                to_frame,
-                rclpy.time.Time(seconds=0),  # Use static transform time
-                timeout=Duration(seconds=2.0)
-            )
-            return transform
-        except Exception as e:  
-            self.get_logger().error(f'Failed to get static transform: {str(e)}')
-            return None
-        
-    def get_tf_dynamic(self, from_frame, to_frame):
-        """
-        Fetch dynamic transform from 'from_frame' to 'to_frame'.
-        """
-        try:
-            self.get_logger().info(f'Waiting for dynamic transform from {from_frame} to {to_frame}')
-            transform = self.tf_buffer.lookup_transform(
-                from_frame,
-                to_frame,
-                rclpy.time.Time(),  # Use current time
-                timeout=Duration(seconds=2.0)
-            )
-            return transform
-        except Exception as e:
-            self.get_logger().error(f'Failed to get dynamic transform: {str(e)}')
-            return None
+        self.tf_map_base_link = None
+        self.tf_map_odom = None
+        self.tf_map_camera
 
     def image_load(self):
         # 이미지 
@@ -540,6 +494,9 @@ class DetectImage(Node):
         1. 이미지를 받아 와서 type을 확인합니다. 
         '''
         self.types,self.origin_points,self.real_points, self.bounds = self.check()
+        if self.tf_map_camera is None:
+            self.get_logger().info('No TF Map Camera')
+            return
         pointer = Pointer(self.K, self.D, self.tf_map_camera) # pointer를 생성합니다.
         if self.types == EXT_IMG['type']:
             self.get_logger().info('Ext Image Detected')
@@ -564,10 +521,10 @@ class DetectImage(Node):
 
     
     def check(self):
-        result = SIFTDetector(self.ext_img,self.cam_image,types=EXT_IMG['type'])
+        result = SIFTDetector(self.ext_img,self.undistort_image,types=EXT_IMG['type'])
         if result.result:
             return EXT_IMG['type'], result.origin_points,result.real_points, result.bounds
-        result = SIFTDetector(self.man_img,self.cam_image,types=MAN_IMG['type'])
+        result = SIFTDetector(self.man_img,self.undistort_image,types=MAN_IMG['type'])
         if result.result:
             return MAN_IMG['type'], result.origin_points,result.real_points, result.bounds
         return 0, 0, 0 ,0 # 매칭된 이미지가 없을 경우 0을 반환합니다.
