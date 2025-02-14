@@ -89,28 +89,35 @@
 ### 🏆 실습 결과물
 <table>
   <tr>
-      <img src="docs/pixel_to_map.gif" width="295">
-      <br><b>Pixel to Map Coordinate Transformation</b></br>
+    <td align="center">
+      <img src="docs/good.gif" width="280">
+      <br><b>Good Autonomous Driving using map</b></br>
+    </td>
+    <td align="center">
+      <img src="docs/bad.gif" width="280">
+      <br><b>Bad Autonomous Driving using map</b></br>
+    </td>
   </tr>
   <tr>
     <td align="center">
-      <img src="docs/man_orig.png">
+      <img src="docs/man_orig.png" width="280">
       <br><b>Origin image</b></br>
     </td>
     <td align="center">
-      <img src="docs/object.png" width="200">
+      <img src="docs/object.png" width="280">
       <br><b>Object Detection Using SIFT</b></br>
     </td>
   </tr>
   <tr>
     <td align="center">
-      <img src="docs/pointing.png" width="200">
+      <img src="docs/pointing.png" width="280">
       <br><b>Pixel to Map Coordinate Transformation</b></br>
     </td>
     <td align="center">
-      <img src="docs/map.png" width="200">
+      <img src="docs/map.png" width="280">
       <br><b>SLAM Map</b></br>
     </td>
   </tr>
-
 </table>
+
+[Full 비디오 다운로드](https://github.com/sepengsu/rokey_week6_ws//raw/main/docs/final.mp4)
